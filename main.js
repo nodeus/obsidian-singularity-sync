@@ -33,6 +33,8 @@ var DEFAULT_SETTINGS = {
   obsidianTasksFile: "/tasks/tasks.md",
   obsidianProjectsFolder: "/project",
   tasksSectionMarker: "#### \u{1F4DD} Tasks",
+  projectTemplate: "",
+  notesSectionMarker: "#### \u{1F4DD} Notes",
   syncDirection: "both",
   syncConflictResolution: "latest_wins",
   syncExcludeTags: "GC,nd",
@@ -96,6 +98,18 @@ var SingularitySyncSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("\u041C\u0430\u0440\u043A\u0435\u0440 \u0441\u0435\u043A\u0446\u0438\u0438 \u0437\u0430\u0434\u0430\u0447").setDesc("\u0417\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A, \u043F\u043E\u0441\u043B\u0435 \u043A\u043E\u0442\u043E\u0440\u043E\u0433\u043E \u0440\u0430\u0441\u043F\u043E\u043B\u0430\u0433\u0430\u044E\u0442\u0441\u044F \u0437\u0430\u0434\u0430\u0447\u0438 \u0432 \u0444\u0430\u0439\u043B\u0430\u0445 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432").addText(
       (text) => text.setPlaceholder("#### \u{1F4DD} Tasks").setValue(this.plugin.settings.tasksSectionMarker).onChange(async (val) => {
         this.plugin.settings.tasksSectionMarker = val;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("\u0428\u0430\u0431\u043B\u043E\u043D \u043D\u043E\u0432\u043E\u0433\u043E \u043F\u0440\u043E\u0435\u043A\u0442\u0430").setDesc("\u0428\u0430\u0431\u043B\u043E\u043D \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u043C\u043E\u0433\u043E \u0434\u043B\u044F \u043D\u043E\u0432\u044B\u0445 \u0444\u0430\u0439\u043B\u043E\u0432 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432. Placeholders: {{title}}, {{singularityId}}, {{date}}, {{emoji}}. \u041E\u0441\u0442\u0430\u0432\u044C \u043F\u0443\u0441\u0442\u044B\u043C \u0434\u043B\u044F \u043F\u0440\u043E\u0441\u0442\u043E\u0433\u043E \u0448\u0430\u0431\u043B\u043E\u043D\u0430 \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E.").addTextArea(
+      (text) => text.setPlaceholder("\u041E\u0441\u0442\u0430\u0432\u044C \u043F\u0443\u0441\u0442\u044B\u043C \u0434\u043B\u044F \u0448\u0430\u0431\u043B\u043E\u043D\u0430 \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E").setValue(this.plugin.settings.projectTemplate).onChange(async (val) => {
+        this.plugin.settings.projectTemplate = val;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("\u041C\u0430\u0440\u043A\u0435\u0440 \u0441\u0435\u043A\u0446\u0438\u0438 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u044F").setDesc("\u0417\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A, \u043F\u043E\u0441\u043B\u0435 \u043A\u043E\u0442\u043E\u0440\u043E\u0433\u043E \u0440\u0430\u0441\u043F\u043E\u043B\u0430\u0433\u0430\u0435\u0442\u0441\u044F \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0435\u043A\u0442\u0430 (\u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0438\u0440\u0443\u0435\u0442\u0441\u044F \u0438\u0437 Singularity \u0432 Obsidian)").addText(
+      (text) => text.setPlaceholder("#### \u{1F4DD} Notes").setValue(this.plugin.settings.notesSectionMarker).onChange(async (val) => {
+        this.plugin.settings.notesSectionMarker = val;
         await this.plugin.saveSettings();
       })
     );
@@ -292,6 +306,14 @@ var SingularityAPIClient = class {
       throw e;
     }
   }
+  async deleteProject(projectId) {
+    try {
+      return this.patch(`/project/${projectId}`, { removed: true });
+    } catch (e) {
+      if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
   async getTags(maxCount = 100, includeRemoved = false) {
     const data = await this.get("/tag", { maxCount, includeRemoved });
     return data.tags ?? [];
@@ -325,6 +347,14 @@ var SingularityAPIClient = class {
   async getProjectById(projectId) {
     try {
       return await this.get(`/project/${projectId}`);
+    } catch (e) {
+      if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+  async getNote(noteId) {
+    try {
+      return await this.get(`/note/${noteId}`);
     } catch (e) {
       if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
       throw e;
@@ -910,7 +940,6 @@ function formatTaskLine(task) {
     const lower = t.toLowerCase();
     if (lower === "todo") return false;
     if (lower.startsWith("notify")) return false;
-    if (task.projectTag && lower === task.projectTag.toLowerCase()) return false;
     return true;
   }).map((t) => `#${t}`).join(" ");
   const notifyTags = task.tags.filter((t) => t.toLowerCase().startsWith("notify")).map((t) => `#${t}`).join(" ");
@@ -1433,16 +1462,11 @@ var ForwardSyncOrchestrator = class {
   }
   async resolveTags(task) {
     const tagIds = [];
-    const projectTagLower = task.projectTag?.toLowerCase();
     for (const tag of task.tags) {
       const lower = tag.toLowerCase();
-      if (lower === "todo" || lower.startsWith("notify") || lower === projectTagLower) continue;
+      if (lower === "todo" || lower.startsWith("notify")) continue;
       const id = await this.apiClient.getOrCreateTag(tag);
       if (id) tagIds.push(id);
-    }
-    if (task.projectTag) {
-      const tagId = await this.apiClient.getOrCreateTag(task.projectTag);
-      if (tagId) tagIds.push(tagId);
     }
     return tagIds;
   }
@@ -1728,6 +1752,193 @@ var ForwardSyncOrchestrator = class {
 
 // src/orchestrators/reverse-sync.ts
 var import_obsidian7 = require("obsidian");
+
+// src/domain/utils/delta-parser.ts
+function wrapInline(text, attrs) {
+  if (attrs.link) return `[${text}](${attrs.link})`;
+  if (attrs.bold && attrs.italic) return `***${text}***`;
+  if (attrs.bold) return `**${text}**`;
+  if (attrs.italic) return `*${text}*`;
+  if (attrs.strike) return `~~${text}~~`;
+  if (attrs.code) return `\`${text}\``;
+  return text;
+}
+function applyBlockFormat(text, attrs) {
+  if (attrs.header === 1) return `# ${text}`;
+  if (attrs.header === 2) return `## ${text}`;
+  if (attrs.header === 3) return `### ${text}`;
+  if (attrs.list === "bullet") return `- ${text}`;
+  if (attrs.list === "checked") return `- [x] ${text}`;
+  if (attrs.list === "unchecked") return `- [ ] ${text}`;
+  if (attrs.blockquote) return `> ${text}`;
+  return text;
+}
+function attrsEqual(a, b) {
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
+function flattenOps(ops) {
+  const chars = [];
+  for (const op of ops) {
+    if (typeof op.insert === "string") {
+      const attrs = op.attributes || {};
+      for (const ch of op.insert) {
+        chars.push({ char: ch, attrs: { ...attrs } });
+      }
+    } else if (op.insert && typeof op.insert === "object") {
+      chars.push({ char: "\0", attrs: { ...op.insert } });
+    }
+  }
+  return chars;
+}
+function buildLines(chars) {
+  const lines = [];
+  let current = [];
+  let currentBlockAttrs = {};
+  for (const c of chars) {
+    if (c.char === "\n") {
+      lines.push({ content: current, blockAttrs: { ...c.attrs } });
+      current = [];
+      currentBlockAttrs = {};
+    } else if (c.char === "\0") {
+      if (current.length > 0) lines.push({ content: current, blockAttrs: {} });
+      current = [];
+      lines.push({ content: [], blockAttrs: { ...c.attrs } });
+    } else {
+      current.push(c);
+    }
+  }
+  if (current.length > 0) lines.push({ content: current, blockAttrs: {} });
+  return lines.reduce((acc, line) => {
+    if (line.blockAttrs.divider) {
+      acc.push({ content: "---", blockAttrs: {} });
+      return acc;
+    }
+    if (line.blockAttrs.image) {
+      acc.push({ content: `![${line.blockAttrs.image}](${line.blockAttrs.image})`, blockAttrs: {} });
+      return acc;
+    }
+    let markdown = "";
+    let i = 0;
+    while (i < line.content.length) {
+      const start = i;
+      const attrs = line.content[i].attrs;
+      while (i < line.content.length && attrsEqual(line.content[i].attrs, attrs)) {
+        i++;
+      }
+      const text = line.content.slice(start, i).map((c) => c.char).join("");
+      markdown += wrapInline(text, attrs);
+    }
+    acc.push({ content: markdown, blockAttrs: line.blockAttrs });
+    return acc;
+  }, []);
+}
+function renderLines(lines) {
+  const result = [];
+  let inCodeBlock = false;
+  let orderedIdx = 0;
+  let lastWasOrdered = false;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.blockAttrs["code-block"]) {
+      if (!inCodeBlock) {
+        result.push("```");
+        inCodeBlock = true;
+      }
+      result.push(line.content);
+      i++;
+      continue;
+    }
+    if (inCodeBlock) {
+      result.push("```");
+      inCodeBlock = false;
+    }
+    if (line.blockAttrs.table) {
+      const tableRows = [];
+      while (i < lines.length && lines[i].blockAttrs.table) {
+        const row = [];
+        while (i < lines.length && lines[i].blockAttrs.table) {
+          row.push(lines[i].content);
+          i++;
+        }
+        tableRows.push(row);
+      }
+      if (tableRows.length > 0) {
+        const maxCols = Math.max(...tableRows.map((r) => r.length));
+        const colWidths = Array.from(
+          { length: maxCols },
+          (_, c) => Math.max(...tableRows.map((r) => (r[c] || "").length), 3)
+        );
+        for (let r = 0; r < tableRows.length; r++) {
+          const row = tableRows[r];
+          const cells = Array.from({ length: maxCols }, (_, c) => {
+            const cell = row[c] || "";
+            return cell.padEnd(colWidths[c]);
+          });
+          result.push(`| ${cells.join(" | ")} |`);
+          if (r === 0) {
+            const sep = colWidths.map((w) => "-".repeat(w)).join(" | ");
+            result.push(`| ${sep} |`);
+          }
+        }
+      }
+      orderedIdx = 0;
+      lastWasOrdered = false;
+      continue;
+    }
+    if (line.blockAttrs.list === "ordered") {
+      orderedIdx++;
+      result.push(`${orderedIdx}. ${line.content}`);
+      lastWasOrdered = true;
+    } else {
+      if (lastWasOrdered && line.blockAttrs.list !== "ordered" && line.content !== "") {
+        result.push("");
+      }
+      orderedIdx = 0;
+      lastWasOrdered = false;
+      result.push(applyBlockFormat(line.content, line.blockAttrs));
+    }
+    i++;
+  }
+  if (inCodeBlock) result.push("```");
+  return result;
+}
+function deltaToMarkdown(ops) {
+  if (!Array.isArray(ops) || ops.length === 0) return "";
+  const chars = flattenOps(ops);
+  const rawLines = buildLines(chars);
+  return renderLines(rawLines).join("\n");
+}
+
+// src/orchestrators/reverse-sync.ts
+function simpleHash2(s) {
+  if (!s) return "";
+  let hash = 5381;
+  for (let i = 0; i < s.length; i++) {
+    hash = (hash << 5) + hash + s.charCodeAt(i);
+    hash = hash | 0;
+  }
+  return hash.toString(36);
+}
+function extractNoteText(note) {
+  if (!note) return "";
+  if (typeof note === "string") {
+    try {
+      const delta = JSON.parse(note);
+      if (Array.isArray(delta)) return deltaToMarkdown(delta);
+    } catch {
+    }
+    return note;
+  }
+  if (Array.isArray(note)) return deltaToMarkdown(note);
+  return String(note);
+}
 function utcIsoToLocalDate(value) {
   if (!value) return null;
   if (/^\d{10,}$/.test(value.trim())) return null;
@@ -1740,7 +1951,7 @@ function utcIsoToLocalDate(value) {
   return `${y}-${m}-${day}`;
 }
 var ReverseSyncOrchestrator = class {
-  constructor(apiClient, taskStore, obsidianTasksFile, vault, vaultWriter, excludeTags = [], dryRun = false, projectsFolder = "/project") {
+  constructor(apiClient, taskStore, obsidianTasksFile, vault, vaultWriter, excludeTags = [], dryRun = false, projectsFolder = "/project", projectTemplate = "", lastKnownProjectFiles = {}, notesSectionMarker = "#### \u{1F4DD} Notes", lastKnownNoteHashes = {}) {
     this.apiClient = apiClient;
     this.taskStore = taskStore;
     this.obsidianTasksFile = obsidianTasksFile;
@@ -1749,13 +1960,27 @@ var ReverseSyncOrchestrator = class {
     this.excludeTags = excludeTags;
     this.dryRun = dryRun;
     this.projectsFolder = projectsFolder;
+    this.projectTemplate = projectTemplate;
     this._projectsCache = {};
     this._projectsFull = {};
     this._tagsCache = {};
-    this._obsidianProjects = /* @__PURE__ */ new Set();
-    this._projectFileMap = /* @__PURE__ */ new Map();
+    this._tagsLoaded = false;
+    this._notesCache = {};
+    this._obsidianProjects = null;
     this.deletedFromObsidian = /* @__PURE__ */ new Set();
     this.syncedObsidianIds = /* @__PURE__ */ new Set();
+    this.isLoadedProject = false;
+    this._currentProjectFiles = {};
+    this._currentNoteHashes = {};
+    this._lastKnownProjectFiles = lastKnownProjectFiles;
+    this._notesSectionMarker = notesSectionMarker;
+    this._lastKnownNoteHashes = lastKnownNoteHashes;
+  }
+  getProjectFiles() {
+    return { ...this._currentProjectFiles };
+  }
+  getNoteHashes() {
+    return { ...this._currentNoteHashes };
   }
   setDeletedFromObsidian(ids) {
     this.deletedFromObsidian = ids;
@@ -1776,7 +2001,9 @@ var ReverseSyncOrchestrator = class {
       dbCleaned: 0
     };
     await this.loadProjects();
+    await this.loadNotes();
     await this.ensureProjectFiles();
+    await this.syncProjectNotes();
     await this.loadTags();
     this.loadObsidianProjects();
     const sgTasks = await this.apiClient.getTasks(false, true);
@@ -1817,6 +2044,20 @@ var ReverseSyncOrchestrator = class {
       this._projectsFull = {};
     }
   }
+  async loadNotes() {
+    this._notesCache = {};
+    for (const [projId, proj] of Object.entries(this._projectsFull)) {
+      const noteId = proj.note;
+      if (!noteId || typeof noteId !== "string" || !noteId.startsWith("N-")) continue;
+      try {
+        const noteData = await this.apiClient.getNote(noteId);
+        if (noteData?.content) {
+          this._notesCache[projId] = extractNoteText(noteData.content);
+        }
+      } catch {
+      }
+    }
+  }
   async ensureProjectFiles() {
     if (this.dryRun) return;
     const relPath = this.projectsFolder.replace(/^\/+/, "");
@@ -1843,19 +2084,30 @@ var ReverseSyncOrchestrator = class {
         }
       }
     }
+    for (const [projId] of Object.entries(this._lastKnownProjectFiles)) {
+      if (!this._projectsFull[projId]) continue;
+      const title = (this._projectsFull[projId].title ?? "").trim();
+      const hasFileInVault = existingById.has(projId) || (title ? existingByName.has(title.toLowerCase()) : false);
+      if (!hasFileInVault) {
+        await this.apiClient.deleteProject(projId);
+        delete this._projectsFull[projId];
+        delete this._projectsCache[projId];
+      }
+    }
     for (const [projId, proj] of Object.entries(this._projectsFull)) {
       const title = (proj.title ?? "").trim();
       if (!title || title.toLowerCase() === "\u0432\u0445\u043E\u0434\u044F\u0449\u0438\u0435" || title.toLowerCase() === "inbox") continue;
       const titleLower = title.toLowerCase();
+      const filePath = `${relPath}/${title}.md`;
       const byId = existingById.get(projId);
       if (byId) {
+        this._currentProjectFiles[projId] = filePath;
         const currentName = byId.name.replace(/\.md$/, "");
         if (currentName !== title) {
-          const targetPath = `${relPath}/${title}.md`;
-          if (existingByName.has(titleLower) && existingByName.get(titleLower).path.toLowerCase() !== targetPath.toLowerCase()) {
+          if (existingByName.has(titleLower) && existingByName.get(titleLower).path.toLowerCase() !== filePath.toLowerCase()) {
             await this.vaultWriter.addFrontmatterIfMissing(byId, projId);
           } else {
-            await this.vault.rename(byId, targetPath);
+            await this.vault.rename(byId, filePath);
             existingByName.delete(currentName.toLowerCase());
             existingByName.set(titleLower, byId);
           }
@@ -1864,35 +2116,101 @@ var ReverseSyncOrchestrator = class {
       }
       const byName = existingByName.get(titleLower);
       if (byName) {
-        const content = await this.vault.read(byName);
-        const currentId = parseFrontmatterId(content);
+        this._currentProjectFiles[projId] = filePath;
+        const content2 = await this.vault.read(byName);
+        const currentId = parseFrontmatterId(content2);
         if (!currentId) {
           await this.vaultWriter.addFrontmatterIfMissing(byName, projId);
         }
         continue;
       }
-      const newPath = `${relPath}/${title}.md`;
-      const exists = this.vault.getAbstractFileByPath(newPath);
+      const exists = this.vault.getAbstractFileByPath(filePath);
       if (exists instanceof import_obsidian7.TFile) {
+        this._currentProjectFiles[projId] = filePath;
         await this.vaultWriter.addFrontmatterIfMissing(exists, projId);
         existingByName.set(titleLower, exists);
         continue;
       }
       const emoji = proj.emoji ? String.fromCodePoint(parseInt(proj.emoji, 16)) : "";
-      const note = proj.note ?? "";
-      const lines = [
-        "---",
-        `singularity-id: "${projId}"`,
-        "---",
-        "",
-        `# ${emoji} ${title}`.trim()
-      ];
-      if (note) lines.push("", note);
-      lines.push("");
+      const noteText = this._notesCache[projId] ?? "";
+      if (noteText) this._currentNoteHashes[projId] = simpleHash2(noteText);
+      let content;
+      if (this.projectTemplate) {
+        const now = /* @__PURE__ */ new Date();
+        const pad = (n) => String(n).padStart(2, "0");
+        const dateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+        content = this.projectTemplate.replace(/\{\{title\}\}/g, title).replace(/\{\{singularity-id\}\}/g, projId).replace(/\{\{date\}\}/g, dateStr).replace(/\{\{emoji\}\}/g, emoji).replace(/\{\{note\}\}/g, noteText);
+      } else {
+        const lines = [
+          "---",
+          `singularity-id: "${projId}"`,
+          "---",
+          "",
+          `# ${emoji} ${title}`.trim()
+        ];
+        if (noteText) lines.push("", noteText);
+        lines.push("");
+        content = lines.join("\n");
+      }
       try {
-        const newFile = await this.vault.create(newPath, lines.join("\n"));
+        const newFile = await this.vault.create(filePath, content);
         existingByName.set(titleLower, newFile);
+        this._currentProjectFiles[projId] = filePath;
       } catch {
+      }
+    }
+  }
+  async syncProjectNotes() {
+    if (this.dryRun) return;
+    const relPath = this.projectsFolder.replace(/^\/+/, "");
+    for (const [projId, proj] of Object.entries(this._projectsFull)) {
+      const noteText = this._notesCache[projId];
+      if (!noteText) continue;
+      const newHash = simpleHash2(noteText);
+      if (this._currentNoteHashes[projId] === newHash) continue;
+      this._currentNoteHashes[projId] = newHash;
+      const oldHash = this._lastKnownNoteHashes[projId];
+      if (oldHash === void 0) continue;
+      if (oldHash === newHash) continue;
+      const title = (proj.title ?? "").trim();
+      if (!title) continue;
+      const filePath = `${relPath}/${title}.md`;
+      const file = this.vault.getAbstractFileByPath(filePath);
+      if (!(file instanceof import_obsidian7.TFile)) continue;
+      const content = await this.vault.read(file);
+      const lines = content.split("\n");
+      const marker = this._notesSectionMarker;
+      const markerIdx = lines.findIndex((l) => l.trim() === marker);
+      if (markerIdx === -1) {
+        const lastLine = lines[lines.length - 1];
+        const needsBlank = lastLine !== "";
+        lines.push(
+          needsBlank ? `
+${marker}
+${noteText}
+` : `${marker}
+${noteText}
+`
+        );
+      } else {
+        let sectionEnd = lines.length;
+        for (let i = markerIdx + 1; i < lines.length; i++) {
+          const trimmed = lines[i].trim();
+          if (trimmed.startsWith("#") && trimmed !== marker) {
+            sectionEnd = i;
+            break;
+          }
+        }
+        const before = lines.slice(0, markerIdx + 1);
+        const after = lines.slice(sectionEnd);
+        const newContent = [
+          ...before,
+          "",
+          ...noteText.split("\n"),
+          "",
+          ...after
+        ].join("\n");
+        await this.vault.modify(file, newContent);
       }
     }
   }
@@ -1991,7 +2309,7 @@ var ReverseSyncOrchestrator = class {
     const projectName = projectId ? this._projectsCache[projectId] : void 0;
     for (const tagId of filteredTags) {
       const tagName = this.getTagName(tagId);
-      if (tagName) obsidianTags.push(tagName);
+      if (tagName) obsidianTags.push(tagName.replace(/\s+/g, "_"));
     }
     if (notifies.length > 0) {
       for (const n of notifies) {
@@ -2155,9 +2473,13 @@ var ReverseSyncOrchestrator = class {
 
 // src/orchestrators/bidirectional-sync.ts
 var BidirectionalSyncOrchestrator = class {
-  constructor(vaultReader, apiClient, taskStore, obsidianTasksFile, vault, vaultWriter, excludeTags = [], dryRun = false, projectsFolder = "/project", conflictStrategy = "latest_wins" /* LatestWins */, conflictPromptFn) {
+  constructor(vaultReader, apiClient, taskStore, obsidianTasksFile, vault, vaultWriter, excludeTags = [], dryRun = false, projectsFolder = "/project", conflictStrategy = "latest_wins" /* LatestWins */, conflictPromptFn, projectTemplate = "", lastKnownProjectFiles = {}, notesSectionMarker = "#### \u{1F4DD} Notes", lastKnownNoteHashes = {}) {
     this.conflictStrategy = conflictStrategy;
     this.conflictPromptFn = conflictPromptFn;
+    this.projectTemplate = projectTemplate;
+    this.lastKnownProjectFiles = lastKnownProjectFiles;
+    this.notesSectionMarker = notesSectionMarker;
+    this.lastKnownNoteHashes = lastKnownNoteHashes;
     this.forward = new ForwardSyncOrchestrator(
       vaultReader,
       apiClient,
@@ -2174,8 +2496,18 @@ var BidirectionalSyncOrchestrator = class {
       vaultWriter,
       excludeTags,
       dryRun,
-      projectsFolder
+      projectsFolder,
+      projectTemplate,
+      lastKnownProjectFiles,
+      notesSectionMarker,
+      lastKnownNoteHashes
     );
+  }
+  getProjectFiles() {
+    return this.reverse.getProjectFiles();
+  }
+  getNoteHashes() {
+    return this.reverse.getNoteHashes();
   }
   async sync(tasksFile, projectsFolder) {
     const stats = await this.forward.sync(tasksFile, projectsFolder);
@@ -2213,6 +2545,8 @@ var SingularitySyncPlugin = class extends import_obsidian8.Plugin {
       delete clean.singularityApiKey;
       clean.syncState = this.taskStore.getAll();
       if (existing.habitState) clean.habitState = existing.habitState;
+      if (existing.projectFiles) clean.projectFiles = existing.projectFiles;
+      if (existing.noteHashes) clean.noteHashes = existing.noteHashes;
       await this.saveData(clean);
     });
     this.statusBar = this.addStatusBarItem();
@@ -2369,7 +2703,8 @@ var SingularitySyncPlugin = class extends import_obsidian8.Plugin {
       });
       const vaultReader = new ObsidianVaultReader(this.app.vault, this.settings.tasksSectionMarker);
       const vaultWriter = new ObsidianVaultWriter(this.app.vault, this.settings.tasksSectionMarker);
-      const savedState = (await this.loadData()).syncState ?? [];
+      const data = await this.loadData();
+      const savedState = data.syncState ?? [];
       this.taskStore.load(savedState);
       const conflictPromptFn = (_obTask, _sgTitle) => {
         const result = prompt("\u26A0\uFE0F \u041A\u043E\u043D\u0444\u043B\u0438\u043A\u0442: \u0432\u044B\u0431\u0440\u0430\u0442\u044C [O]bsidian / [S]ingularity / \u043F\u0440\u043E\u043F\u0443\u0441\u0442\u0438\u0442\u044C [K]");
@@ -2386,15 +2721,20 @@ var SingularitySyncPlugin = class extends import_obsidian8.Plugin {
         this.settings.syncDryRun,
         this.settings.obsidianProjectsFolder,
         this.settings.syncConflictResolution,
-        conflictPromptFn
+        conflictPromptFn,
+        this.settings.projectTemplate,
+        data.projectFiles ?? {},
+        this.settings.notesSectionMarker,
+        data.noteHashes ?? {}
       );
       stats = await orchestrator.sync(
         this.settings.obsidianTasksFile,
         this.settings.obsidianProjectsFolder
       );
       const syncState = this.taskStore.getAll();
-      const data = await this.loadData();
       data.syncState = syncState;
+      data.projectFiles = orchestrator.getProjectFiles();
+      data.noteHashes = orchestrator.getNoteHashes();
       await this.saveData(data);
       const now = /* @__PURE__ */ new Date();
       const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
@@ -2455,6 +2795,9 @@ var SingularitySyncPlugin = class extends import_obsidian8.Plugin {
     const clean = { ...this.settings };
     delete clean.singularityApiKey;
     if (data.syncState) clean.syncState = data.syncState;
+    if (data.projectFiles) clean.projectFiles = data.projectFiles;
+    if (data.noteHashes) clean.noteHashes = data.noteHashes;
+    if (data.habitState) clean.habitState = data.habitState;
     await this.saveData(clean);
   }
 };
