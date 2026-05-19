@@ -18,6 +18,9 @@
 | ✅ **Habits (3 states)** | 14-day habit tracker with 3 states (not done / half / full), colors from Singularity |
 | 🔔 **Smart notifications** | `#notify/30`, `#notify/1h`, `#notify/1d` — time-based reminders |
 | 📁 **Per-project files** | Tasks are stored in project files (`/project/*.md`) — file location IS the project membership |
+| 📝 **Project descriptions** | Description from Singularity projects is synced to `#### 📝 Notes` section in project files |
+| 📄 **Project template** | Customizable template for new project files with `{{title}}`, `{{singularityId}}`, `{{date}}`, `{{emoji}}`, `{{note}}` |
+| 🗑️ **Soft-delete** | Removing tasks or project files in Obsidian soft-deletes them in Singularity |
 | ⚡ **Priority mapping** | 🔺⏫🔼🔽⏬ ↔ 0 / 1 / 2 |
 | 🗂️ **Conflict resolution** | 4 strategies: Latest Wins / Obsidian Wins / Singularity Wins / Manual |
 | 🔒 **SecretStorage** | API key stored securely in Obsidian's protected storage, never in plain text |
@@ -65,6 +68,18 @@ Only tasks with the `#todo` tag are synced. The expected format:
 - Tasks in `/tasks/tasks.md` → inbox (no project)
 - No `#project-name` tag needed in the task line
 
+### Frontmatter
+
+Each project file (`/project/<name>.md`) contains a `singularity-id` in its frontmatter that links it to the Singularity project:
+
+```
+---
+singularity-id: 550e8400-e29b-41d4-a716-446655440000
+---
+```
+
+This is set automatically when the file is created. Do not remove or modify it manually.
+
 ### Order of emoji
 | Position | Emoji | Meaning | Format |
 |----------|-------|---------|--------|
@@ -104,6 +119,15 @@ Notification tags are always placed at the end of the task line.
 | `📅` | `deadline` (date) | — |
 | `✅` | `checked: 1` + archive | Completes task |
 
+### Behavior
+
+| Rule | Description |
+|------|-------------|
+| **Task matching** | Tasks are matched first by `externalId` (stored in local database), then by normalized title as fallback |
+| **Soft-delete** | Removing the last synced `#todo` from a file soft-deletes the task in Singularity. Deleting a project file soft-deletes the entire project |
+| **Rename detection** | Renaming a project in Singularity automatically renames the corresponding `.md` file in Obsidian |
+| **SG tags with spaces** | Tags containing spaces from Singularity are converted: `#my tag` → `#my_tag` |
+
 ---
 
 ## ⚙️ Settings
@@ -114,9 +138,35 @@ Notification tags are always placed at the end of the task line.
 | Tasks file | `/tasks/tasks.md` | File for inbox tasks (no project) |
 | Projects folder | `/project` | Folder with project task files — one `.md` per project |
 | Tasks section marker | `#### 📝 Tasks` | Heading marker for the tasks section in project files |
+| Notes section marker | `#### 📝 Notes` | Heading marker for project description (synced from Singularity) |
+| Project template | *(empty)* | Template for new project files. Placeholders: `{{title}}`, `{{singularityId}}`, `{{date}}`, `{{emoji}}`, `{{note}}` |
 | Sync direction | `both` | `both`, `forward`, or `reverse` |
 | Conflict resolution | `latest_wins` | How to resolve conflicting edits |
 | Exclude tags | `GC, nosync` | Comma-separated tags to skip |
+
+---
+
+## 📄 Project Template
+
+When a new project is created on Singularity, the plugin creates a corresponding `.md` file locally. You can customize its content via the `projectTemplate` setting.
+
+| Placeholder | Replaced with |
+|-------------|---------------|
+| `{{title}}` | Project name |
+| `{{singularityId}}` | Singularity project UUID |
+| `{{date}}` | Current date (`YYYY-MM-DD HH:mm:ss`) |
+| `{{emoji}}` | Project emoji (Unicode hex) |
+| `{{note}}` | Project description (synced from Singularity) |
+
+Default (empty setting) produces:
+
+```markdown
+---
+singularity-id: {{singularityId}}
+---
+# {{title}}
+#### 📝 Notes
+```
 
 ---
 
@@ -188,8 +238,10 @@ obsidian-plugin/
 │   │   ├── models.ts              # TypeScript interfaces & enums
 │   │   ├── mapper.ts              # Priority, state, date mapping
 │   │   ├── parser.ts              # Obsidian task line parser
+│   │   ├── conflict-resolver.ts   # Conflict resolution strategies
 │   │   └── utils/
 │   │       ├── date-parser.ts     # Emoji date extraction
+│   │       ├── delta-parser.ts    # Singularity Delta format parser
 │   │       └── tag-extractor.ts   # Tag & notification parsing
 │   ├── adapters/
 │   │   ├── singularity/
@@ -215,7 +267,7 @@ obsidian-plugin/
 
 | Suite | Count |
 |-------|-------|
-| **TypeScript (Vitest)** | 72 / 72 |
+| **TypeScript (Vitest)** | 80 / 80 |
 
 ---
 
