@@ -1,0 +1,11 @@
+{
+  "id": "singularity-sync",
+  "name": "Singularity Sync",
+  "version": "2.0.1",
+  "minAppVersion": "1.5.0",
+  "description": "Two-way task synchronization between Obsidian and Singularity",
+  "author": "nodeus",
+  "authorUrl": "https://nodeus.ru",
+  "fundingUrl": "https://boosty.to/nodeus",
+  "isDesktopOnly": false
+}
