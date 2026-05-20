@@ -15,7 +15,8 @@
 |---------|-------------|
 | 🔄 **Bidirectional sync** | Keep tasks in sync between Obsidian and Singularity — changes in either app are reflected in both |
 | 📋 **Sidebar panel** | View and manage Singularity tasks directly inside Obsidian — grouped by project, with checkboxes and filters |
-| ✅ **Habits (3 states)** | 14-day habit tracker with 3 states (not done / half / full), colors from Singularity |
+| ✅ **Habits (3 states)** | Configurable habit tracker with 3 states (not done / half / full), colors from Singularity |
+| 📝 **Inline habits panel** | Embed an interactive habits tracker inside any note via ```` ```singularity-habits ```` code block |
 | 🔔 **Smart notifications** | `#notify/30`, `#notify/1h`, `#notify/1d` — time-based reminders |
 | 📁 **Per-project files** | Tasks are stored in project files (`/project/*.md`) — file location IS the project membership |
 | 📝 **Project descriptions** | Description from Singularity projects is synced to `#### 📝 Notes` section in project files |
@@ -143,6 +144,7 @@ Notification tags are always placed at the end of the task line.
 | Sync direction | `both` | `both`, `forward`, or `reverse` |
 | Conflict resolution | `latest_wins` | How to resolve conflicting edits |
 | Exclude tags | `GC, nosync` | Comma-separated tags to skip |
+| Habits days count | `14` | Number of past days to show in sidebar habits tab (1–14) |
 
 ---
 
@@ -182,12 +184,41 @@ Opens automatically on startup if it was open before. Two tabs:
 - Shows due dates inline
 
 ### ✅ Habits tab
-- 14-day grid view
+- Configurable day range (1–14, set in Settings → ✅ Привычки)
 - 3 states: not done (empty) → full → half → not done
 - Click to cycle through states
 - Cell colors match habit colors from Singularity
 
 ---
+
+## 📝 Inline Habits Panel
+
+Embed an interactive habit tracker directly inside any note using the `singularity-habits` code block.
+
+### Syntax
+
+````markdown
+```singularity-habits
+days: 14
+- зарядка
+- all
+```
+````
+
+### Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `days: N` | Number of past days to show (default: 14) |
+| `- all` | Show all habits from your Singularity account (default) |
+| `- <name>` | Show only specific habits (filter by title) |
+
+### Behavior
+
+- The block renders a grid matching the sidebar habits tab
+- Click a cell to cycle: empty → half (2) → full (1) → empty (0)
+- Changes sync to Singularity API instantly and update both the sidebar panel and any other inline panels on the page
+- Works in both **Live Preview** and **Reading View**
 
 ## ⌨️ Commands
 
@@ -257,6 +288,7 @@ obsidian-plugin/
 │   │   └── bidirectional-sync.ts  # Combined sync orchestrator
 │   └── ui/
 │       ├── singularity-view.ts    # Sidebar panel (tasks + habits)
+│       ├── habits-inline.ts       # Inline habits code block processor
 │       └── conflict-modal.ts      # Manual conflict resolver
 └── tests/                         # Vitest tests
 ```

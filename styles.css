@@ -110,7 +110,7 @@
 }
 .singularity-habits-scroll {
   display: table;
-  min-width: 100%;
+  border-spacing: 0;
 }
 .singularity-habits-row {
   display: table-row;
@@ -159,4 +159,19 @@
 .singularity-habits-dot {
   margin-right: 4px;
   font-size: 14px;
+}
+
+/* Inline habits panel */
+.singularity-habits-inline {
+  margin: 8px 0;
+}
+.singularity-habits-loading {
+  color: var(--text-muted);
+  padding: 8px;
+  text-align: center;
+}
+.singularity-habits-error {
+  color: var(--text-error);
+  padding: 8px;
+  text-align: center;
 }
