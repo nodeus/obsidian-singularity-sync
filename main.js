@@ -1739,21 +1739,29 @@ var ForwardSyncOrchestrator = class {
 
 // src/orchestrators/reverse-sync.ts
 var import_obsidian7 = require("obsidian");
+function isNoteId(value) {
+  return /^N(?:-[A-Za-z0-9]+)+$/.test(value.trim());
+}
+function simpleHash2(s) {
+  if (!s) return "";
+  let hash = 5381;
+  for (let i = 0; i < s.length; i++) {
+    hash = (hash << 5) + hash + s.charCodeAt(i);
+    hash = hash | 0;
+  }
+  return hash.toString(36);
+}
 function extractNoteText(note) {
   if (!note) return "";
   if (typeof note === "string") {
     try {
       const delta = JSON.parse(note);
-      if (Array.isArray(delta)) {
-        return delta.map((op) => op.insert ?? "").join("");
-      }
+      if (Array.isArray(delta)) return delta.map((op) => op.insert ?? "").join("");
     } catch {
     }
     return note;
   }
-  if (Array.isArray(note)) {
-    return note.map((op) => op.insert ?? "").join("");
-  }
+  if (Array.isArray(note)) return note.map((op) => op.insert ?? "").join("");
   return String(note);
 }
 function utcIsoToLocalDate(value) {
@@ -1768,7 +1776,7 @@ function utcIsoToLocalDate(value) {
   return `${y}-${m}-${day}`;
 }
 var ReverseSyncOrchestrator = class {
-  constructor(apiClient, taskStore, obsidianTasksFile, vault, vaultWriter, excludeTags = [], dryRun = false, projectsFolder = "/project", projectTemplate = "", lastKnownProjectFiles = {}) {
+  constructor(apiClient, taskStore, obsidianTasksFile, vault, vaultWriter, excludeTags = [], dryRun = false, projectsFolder = "/project", projectTemplate = "", lastKnownProjectFiles = {}, notesSectionMarker = "#### \u{1F4DD} Notes", lastKnownNoteHashes = {}) {
     this.apiClient = apiClient;
     this.taskStore = taskStore;
     this.obsidianTasksFile = obsidianTasksFile;
@@ -1787,10 +1795,16 @@ var ReverseSyncOrchestrator = class {
     this.syncedObsidianIds = /* @__PURE__ */ new Set();
     this.isLoadedProject = false;
     this._currentProjectFiles = {};
+    this._currentNoteHashes = {};
     this._lastKnownProjectFiles = lastKnownProjectFiles;
+    this._notesSectionMarker = notesSectionMarker;
+    this._lastKnownNoteHashes = lastKnownNoteHashes;
   }
   getProjectFiles() {
     return { ...this._currentProjectFiles };
+  }
+  getNoteHashes() {
+    return { ...this._currentNoteHashes };
   }
   setDeletedFromObsidian(ids) {
     this.deletedFromObsidian = ids;
@@ -1812,6 +1826,7 @@ var ReverseSyncOrchestrator = class {
     };
     await this.loadProjects();
     await this.ensureProjectFiles();
+    await this.syncProjectNotes();
     await this.loadTags();
     this.loadObsidianProjects();
     const sgTasks = await this.apiClient.getTasks(false, true);
@@ -1878,6 +1893,16 @@ var ReverseSyncOrchestrator = class {
         }
       }
     }
+    for (const [projId] of Object.entries(this._lastKnownProjectFiles)) {
+      if (!this._projectsFull[projId]) continue;
+      const title = (this._projectsFull[projId].title ?? "").trim();
+      const hasFileInVault = existingById.has(projId) || (title ? existingByName.has(title.toLowerCase()) : false);
+      if (!hasFileInVault) {
+        await this.apiClient.deleteProject(projId);
+        delete this._projectsFull[projId];
+        delete this._projectsCache[projId];
+      }
+    }
     for (const [projId, proj] of Object.entries(this._projectsFull)) {
       const title = (proj.title ?? "").trim();
       if (!title || title.toLowerCase() === "\u0432\u0445\u043E\u0434\u044F\u0449\u0438\u0435" || title.toLowerCase() === "inbox") continue;
@@ -1916,13 +1941,15 @@ var ReverseSyncOrchestrator = class {
         continue;
       }
       const emoji = proj.emoji ? String.fromCodePoint(parseInt(proj.emoji, 16)) : "";
-      const note = proj.note ?? "";
+      const noteRaw = proj.note ?? "";
+      const noteText = noteRaw && isNoteId(noteRaw) ? "" : extractNoteText(noteRaw);
+      if (noteText) this._currentNoteHashes[projId] = simpleHash2(noteText);
       let content;
       if (this.projectTemplate) {
         const now = /* @__PURE__ */ new Date();
         const pad = (n) => String(n).padStart(2, "0");
         const dateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-        content = this.projectTemplate.replace(/\{\{title\}\}/g, title).replace(/\{\{singularity-id\}\}/g, projId).replace(/\{\{date\}\}/g, dateStr).replace(/\{\{emoji\}\}/g, emoji).replace(/\{\{note\}\}/g, extractNoteText(note));
+        content = this.projectTemplate.replace(/\{\{title\}\}/g, title).replace(/\{\{singularity-id\}\}/g, projId).replace(/\{\{date\}\}/g, dateStr).replace(/\{\{emoji\}\}/g, emoji).replace(/\{\{note\}\}/g, noteText);
       } else {
         const lines = [
           "---",
@@ -1931,7 +1958,7 @@ var ReverseSyncOrchestrator = class {
           "",
           `# ${emoji} ${title}`.trim()
         ];
-        if (note) lines.push("", extractNoteText(note));
+        if (noteText) lines.push("", noteText);
         lines.push("");
         content = lines.join("\n");
       }
@@ -1942,13 +1969,60 @@ var ReverseSyncOrchestrator = class {
       } catch {
       }
     }
-    for (const [projId, prevPath] of Object.entries(this._lastKnownProjectFiles)) {
-      if (this._currentProjectFiles[projId]) continue;
-      const file = this.vault.getAbstractFileByPath(prevPath);
-      if (file instanceof import_obsidian7.TFile) continue;
-      await this.apiClient.deleteProject(projId);
-      delete this._projectsFull[projId];
-      delete this._projectsCache[projId];
+  }
+  async syncProjectNotes() {
+    if (this.dryRun) return;
+    const relPath = this.projectsFolder.replace(/^\/+/, "");
+    for (const [projId, proj] of Object.entries(this._projectsFull)) {
+      const noteRaw = proj.note ?? "";
+      if (!noteRaw || isNoteId(noteRaw)) continue;
+      const noteText = extractNoteText(noteRaw);
+      const newHash = simpleHash2(noteText);
+      if (this._currentNoteHashes[projId] === newHash) continue;
+      this._currentNoteHashes[projId] = newHash;
+      const oldHash = this._lastKnownNoteHashes[projId];
+      if (oldHash === void 0) continue;
+      if (oldHash === newHash) continue;
+      const title = (proj.title ?? "").trim();
+      if (!title) continue;
+      const filePath = `${relPath}/${title}.md`;
+      const file = this.vault.getAbstractFileByPath(filePath);
+      if (!(file instanceof import_obsidian7.TFile)) continue;
+      const content = await this.vault.read(file);
+      const lines = content.split("\n");
+      const marker = this._notesSectionMarker;
+      const markerIdx = lines.findIndex((l) => l.trim() === marker);
+      if (markerIdx === -1) {
+        const lastLine = lines[lines.length - 1];
+        const needsBlank = lastLine !== "";
+        lines.push(
+          needsBlank ? `
+${marker}
+${noteText}
+` : `${marker}
+${noteText}
+`
+        );
+      } else {
+        let sectionEnd = lines.length;
+        for (let i = markerIdx + 1; i < lines.length; i++) {
+          const trimmed = lines[i].trim();
+          if (trimmed.startsWith("#") && trimmed !== marker) {
+            sectionEnd = i;
+            break;
+          }
+        }
+        const before = lines.slice(0, markerIdx + 1);
+        const after = lines.slice(sectionEnd);
+        const newContent = [
+          ...before,
+          "",
+          ...noteText.split("\n"),
+          "",
+          ...after
+        ].join("\n");
+        await this.vault.modify(file, newContent);
+      }
     }
   }
   async loadTags() {
