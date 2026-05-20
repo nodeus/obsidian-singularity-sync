@@ -19,7 +19,7 @@
 | 🔔 **Smart notifications** | `#notify/30`, `#notify/1h`, `#notify/1d` — time-based reminders |
 | 📁 **Per-project files** | Tasks are stored in project files (`/project/*.md`) — file location IS the project membership |
 | 📝 **Project descriptions** | Description from Singularity projects is synced to `#### 📝 Notes` section in project files |
-| 📄 **Project template** | Customizable template for new project files with `{{title}}`, `{{singularityId}}`, `{{date}}`, `{{emoji}}`, `{{note}}` |
+| 📄 **Project template** | Customizable template for new project files with `{{title}}`, `{{singularity-id}}`, `{{date}}`, `{{emoji}}`, `{{note}}` |
 | 🗑️ **Soft-delete** | Removing tasks or project files in Obsidian soft-deletes them in Singularity |
 | ⚡ **Priority mapping** | 🔺⏫🔼🔽⏬ ↔ 0 / 1 / 2 |
 | 🗂️ **Conflict resolution** | 4 strategies: Latest Wins / Obsidian Wins / Singularity Wins / Manual |
@@ -139,7 +139,7 @@ Notification tags are always placed at the end of the task line.
 | Projects folder | `/project` | Folder with project task files — one `.md` per project |
 | Tasks section marker | `#### 📝 Tasks` | Heading marker for the tasks section in project files |
 | Notes section marker | `#### 📝 Notes` | Heading marker for project description (synced from Singularity) |
-| Project template | *(empty)* | Template for new project files. Placeholders: `{{title}}`, `{{singularityId}}`, `{{date}}`, `{{emoji}}`, `{{note}}` |
+| Project template | *(empty)* | Template for new project files. Placeholders: `{{title}}`, `{{singularity-id}}`, `{{date}}`, `{{emoji}}`, `{{note}}` |
 | Sync direction | `both` | `both`, `forward`, or `reverse` |
 | Conflict resolution | `latest_wins` | How to resolve conflicting edits |
 | Exclude tags | `GC, nosync` | Comma-separated tags to skip |
@@ -153,7 +153,7 @@ When a new project is created on Singularity, the plugin creates a corresponding
 | Placeholder | Replaced with |
 |-------------|---------------|
 | `{{title}}` | Project name |
-| `{{singularityId}}` | Singularity project UUID |
+| `{{singularity-id}}` | Singularity project UUID |
 | `{{date}}` | Current date (`YYYY-MM-DD HH:mm:ss`) |
 | `{{emoji}}` | Project emoji (Unicode hex) |
 | `{{note}}` | Project description (synced from Singularity) |
