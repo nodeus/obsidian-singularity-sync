@@ -36,7 +36,7 @@
 
 ### Через BRAT (рекомендуется)
 1. Установите плагин [BRAT](https://obsidian.md/plugins?id=obsidian42-brat) из магазина Community Plugins
-2. Добавьте `https://github.com/nodeus/singularity-sync` в BRAT
+2. Добавьте `https://github.com/nodeus/obsidian-singularity-sync` в BRAT
 3. Включите **Singularity Sync** в Community Plugins
 
 ### Вручную
