@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.2.0 (2026-06-17)
+
+### Added
+- **⏰ Reminder support**: поле `reminderDate` (эмодзи `⏰`) — дата и время напоминания. Вычисляется из `notifies` + `deadline` (reverse sync) или из `⏰` в строке задачи (forward sync).
+- **`notifies` → `⏰` forward mapping**: при forward sync `⏰` + `📅` конвертируются в массив `notifies` (минуты до дедлайна). Пользователь может редактировать `⏰` — изменения попадут в Singularity.
+- **`start` → `⏰` mapping**: если `start` в Singularity содержит время и `notifies` задан — маппится в `⏰` (а не в `⏳`). Время **только** в `⏰` — совместимо с Obsidian Tasks Plugin.
+- **Standard task format**: `formatTaskLine()` генерирует задачи в строгом порядке: `#todo desc #tags ➕ ⏰ 🛫 ⏳ 📅 🔼 #notify`.
+- **StableHash (dedup)**: `computeStableHash()` — хеш описания без метаданных (теги, даты, эмодзи). При изменении описания задача перелинковывается через `TaskStore` вместо создания дубликата.
+- **Project transfer**: перемещение задачи между проектными файлами + изменение описания корректно обновляет `projectId` в Singularity через stableHash fallback.
+- **Normalize task order**: `normalizeTaskLines()` перезаписывает строки задач после forward sync в стандартном порядке.
+- **Quiet API mode**: `_req()` принимает `quiet` — подавляет `console.error` и `Notice` для ожидаемых 404 (используется в `setHabitProgress()`).
+
+### Fixed
+- **Tasks wiped on sync**: `writeTasksToFile()` с пустым массивом задач стирал секцию `#### 📝 Tasks`. Теперь `if (processed.length === 0) continue;` предотвращает запись пустых массивов.
+- **Completed tasks not syncing**: forward sync архивировал задачи в SG, но reverse sync пропускал их (timestamp match). Добавлен трекинг `_archivedIds` — reverse sync обрабатывает заархивированные задачи.
+- **⏰ without notifies**: `start` с временем генерировал `⏰` даже без `notifies` в API. Теперь `reminderDate` устанавливается только если `notifies.length > 0`.
+- **Time loss on 🛫/📅**: `formatTaskLine()` использовал `.split(" ")[0]` для `startDate`/`dueDate`, теряя время. Исправлено — время отображается только в `⏰`.
+- **Habit progress 404 Notice**: `_req()` показывал `Notice` для ожидаемого 404 при PATCH привычек. Добавлен `quiet` режим.
+- **`generateTaskId` regex order**: emoji-даты теперь-stripаются перед эмодзи приоритета (порядок `ALL_EMOJI_DATE_RE` → `ALL_EMOJI_RE`).
+- **⏰ only from start**: `⏰` теперь ТОЛЬКО из поля `start` (ранее fallback из `deadline - notifies`).
+- **#notify from ⏰ only**: `#notify` генерируется только из `start`, не из `deadline - start`.
+- **Local time to API**: `formatDateForApi()` отправляет локальное время без `Z` (Singularity ожидает local time, не UTC).
+- **notifies[0] for ⏰**: если `⏰` задан без `#notify` → отправляется `notifies: [0]` (напомнить ровно в время `⏰`).
+
+### Changed
+- **`notify` (singular) и `alarmNotify`**: read-only в API, больше не отправляются при создании задач.
+- **Reverse sync timestamp skip**: reverse sync пропускает SG-задачи, не изменённые с последней синхронизации (`modificatedDate <= lastModifiedSingularity`).
+
 ## 2.0.1 (2026-05-19)
 
 ### Fixed
