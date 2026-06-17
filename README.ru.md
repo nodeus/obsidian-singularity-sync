@@ -3,7 +3,7 @@
 ![Version](https://img.shields.io/badge/version-2.2.1-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.5%2B-purple)
 
-**Теги**: `#sync` `#tasks` `#productivity` `#todo` `#habits` `#singularity` `#kanban` `#calendar` `#time-management`
+**Теги**: `#sync` `#tasks` `#productivity` `#todo` `#habits` `#singularity` `#time-management`
 
 > **Двусторонняя синхронизация задач** между [Obsidian](https://obsidian.md) (плагин Tasks) и [Singularity](https://singularity-app.com) — кроссплатформенным планировщиком с привычками, канбаном и учётом времени.
 

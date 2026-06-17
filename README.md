@@ -3,7 +3,7 @@
 ![Version](https://img.shields.io/badge/version-2.2.1-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.5%2B-purple)
 
-**Tags**: `#sync` `#tasks` `#productivity` `#todo` `#habits` `#singularity` `#kanban` `#calendar` `#time-management`
+**Tags**: `#sync` `#tasks` `#productivity` `#todo` `#habits` `#singularity` `#time-management`
 
 > **🌐 [Русская версия](README.ru.md)**
 
