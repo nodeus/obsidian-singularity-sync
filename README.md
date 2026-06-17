@@ -3,6 +3,8 @@
 ![Version](https://img.shields.io/badge/version-2.2.1-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.5%2B-purple)
 
+**Tags**: `#sync` `#tasks` `#productivity` `#todo` `#habits` `#singularity` `#kanban` `#calendar` `#time-management`
+
 > **🌐 [Русская версия](README.ru.md)**
 
 > **Two-way task synchronization** between [Obsidian](https://obsidian.md) (Tasks plugin) and [Singularity](https://singularity-app.com) — a cross-platform task manager with habits, kanban, and time tracking.
@@ -255,59 +257,6 @@ If you have more than 1000 active tasks, sync will process the first 1000. Compl
 - **API key** is stored in Obsidian's `SecretStorage` (not in `data.json`)
 - Key is never written to logs or settings files
 - On save, `settings` and `data.json` are scrubbed of any key traces
-
----
-
-## 🏗️ Development
-
-```bash
-cd obsidian-plugin
-npm install
-npm run build        # production build
-npm test             # run TypeScript tests
-```
-
-### Project structure
-```
-obsidian-plugin/
-├── src/
-│   ├── main.ts                    # Plugin entry, commands, panel lifecycle
-│   ├── settings.ts                # Settings tab
-│   ├── domain/
-│   │   ├── models.ts              # TypeScript interfaces & enums
-│   │   ├── mapper.ts              # Priority, state, date mapping
-│   │   ├── parser.ts              # Obsidian task line parser
-│   │   ├── conflict-resolver.ts   # Conflict resolution strategies
-│   │   └── utils/
-│   │       ├── date-parser.ts     # Emoji date extraction
-│   │       ├── delta-parser.ts    # Singularity Delta format parser
-│   │       └── tag-extractor.ts   # Tag & notification parsing
-│   ├── adapters/
-│   │   ├── singularity/
-│   │   │   └── api-client.ts      # Singularity REST API client
-│   │   ├── obsidian/
-│   │   │   ├── vault-reader.ts    # Read tasks from vault
-│   │   │   └── vault-writer.ts    # Write tasks to vault
-│   │   └── db/
-│   │       └── task-store.ts      # Sync state persistence
-│   ├── orchestrators/
-│   │   ├── forward-sync.ts        # Obsidian → Singularity
-│   │   ├── reverse-sync.ts        # Singularity → Obsidian
-│   │   └── bidirectional-sync.ts  # Combined sync orchestrator
-│   └── ui/
-│       ├── singularity-view.ts    # Sidebar panel (tasks + habits)
-│       ├── habits-inline.ts       # Inline habits code block processor
-│       └── conflict-modal.ts      # Manual conflict resolver
-└── tests/                         # Vitest tests
-```
-
----
-
-## 🧪 Tests
-
-| Suite | Count |
-|-------|-------|
-| **TypeScript (Vitest)** | 80 / 80 |
 
 ---
 

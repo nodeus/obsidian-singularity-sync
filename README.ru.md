@@ -3,6 +3,8 @@
 ![Version](https://img.shields.io/badge/version-2.2.1-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.5%2B-purple)
 
+**Теги**: `#sync` `#tasks` `#productivity` `#todo` `#habits` `#singularity` `#kanban` `#calendar` `#time-management`
+
 > **Двусторонняя синхронизация задач** между [Obsidian](https://obsidian.md) (плагин Tasks) и [Singularity](https://singularity-app.com) — кроссплатформенным планировщиком с привычками, канбаном и учётом времени.
 
 ---
@@ -255,59 +257,6 @@ days: 14
 - **API-ключ** хранится в `SecretStorage` Obsidian (не в `data.json`)
 - Ключ никогда не попадает в логи или файлы настроек
 - При сохранении `settings` и `data.json` очищаются от любых следов ключа
-
----
-
-## 🏗️ Разработка
-
-```bash
-cd obsidian-plugin
-npm install
-npm run build        # production-сборка
-npm test             # TypeScript-тесты
-```
-
-### Структура проекта
-```
-obsidian-plugin/
-├── src/
-│   ├── main.ts                    # Точка входа, команды, lifecycle панели
-│   ├── settings.ts                # Вкладка настроек
-│   ├── domain/
-│   │   ├── models.ts              # Интерфейсы и перечисления
-│   │   ├── mapper.ts              # Маппинг приоритетов, статусов, дат
-│   │   ├── parser.ts              # Парсер строк задач Obsidian
-│   │   ├── conflict-resolver.ts   # Стратегии разрешения конфликтов
-│   │   └── utils/
-│   │       ├── date-parser.ts     # Извлечение дат из эмодзи
-│   │       ├── delta-parser.ts    # Парсинг Delta-формата Singularity
-│   │       └── tag-extractor.ts   # Парсинг тегов и уведомлений
-│   ├── adapters/
-│   │   ├── singularity/
-│   │   │   └── api-client.ts      # Клиент REST API Singularity
-│   │   ├── obsidian/
-│   │   │   ├── vault-reader.ts    # Чтение задач из хранилища
-│   │   │   └── vault-writer.ts    # Запись задач в хранилище
-│   │   └── db/
-│   │       └── task-store.ts      # Состояние синхронизации
-│   ├── orchestrators/
-│   │   ├── forward-sync.ts        # Obsidian → Singularity
-│   │   ├── reverse-sync.ts        # Singularity → Obsidian
-│   │   └── bidirectional-sync.ts  # Общий оркестратор
-│   └── ui/
-│       ├── singularity-view.ts    # Боковая панель (задачи + привычки)
-│       ├── habits-inline.ts       # Обработчик встраиваемого блока привычек
-│       └── conflict-modal.ts      # Модальное окно разрешения конфликтов
-└── tests/                         # Vitest-тесты
-```
-
----
-
-## 🧪 Тесты
-
-| Набор | Количество |
-|-------|-----------|
-| **TypeScript (Vitest)** | 80 / 80 |
 
 ---
 
