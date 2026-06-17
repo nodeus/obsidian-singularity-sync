@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.1 (2026-06-17)
+
+### Fixed
+- **Task disappearance on sync**: reverse sync timestamp check (`sgMod <= lastKnown`) пропускал задачи с `externalId`, которые только что создал forward sync. Поскольку `writeTasksToFile` заменяет секцию целиком, пропущенные задачи удалялись из файла. Теперь задачи с `externalId` никогда не пропускаются — они всегда включаются в `tasksToWrite`.
+- **Unnecessary vault.modify calls**: `writeTasksToFile()` вызывал `vault.modify()` даже при идентичном содержимом, что меняло `file.stat.mtime` и провоцировало лишние API-обновления. Теперь содержимое сравнивается перед записью.
+
 ## 2.2.0 (2026-06-17)
 
 ### Added

@@ -1275,17 +1275,22 @@ ${taskLines.join("\n")}
       }
       const before = lines.slice(0, markerIdx + 1);
       const after = lines.slice(sectionEnd);
-      const newContent = [
+      const newContent2 = [
         ...before,
         "",
         ...taskLines,
         "",
         ...after
       ].join("\n");
-      await this.vault.modify(file, newContent);
+      if (newContent2 !== content) {
+        await this.vault.modify(file, newContent2);
+      }
       return;
     }
-    await this.vault.modify(file, lines.join("\n"));
+    const newContent = lines.join("\n");
+    if (newContent !== content) {
+      await this.vault.modify(file, newContent);
+    }
   }
   async hasTasksSection(filePath) {
     const relPath = filePath.replace(/^\/+/, "");
@@ -2642,7 +2647,7 @@ ${noteText}
       const sgMod = parseSgDate(sgTask.modificatedDate);
       const lastKnown = parseSgDate(state.lastModifiedSingularity);
       if (sgMod && lastKnown && sgMod <= lastKnown) {
-        return [false, null];
+        if (!extId) return [false, null];
       }
     }
     const title = sgTask.title ?? "";
