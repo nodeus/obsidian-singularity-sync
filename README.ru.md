@@ -1,6 +1,6 @@
 # Singularity Sync
 
-![Version](https://img.shields.io/badge/version-2.2.2-blue)
+![Version](https://img.shields.io/badge/version-2.2.3-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.5%2B-purple)
 
 > **Двусторонняя синхронизация задач** между [Obsidian](https://obsidian.md) (плагин Tasks) и [Singularity](https://singularity-app.com) — кроссплатформенным планировщиком с привычками, канбаном и учётом времени.

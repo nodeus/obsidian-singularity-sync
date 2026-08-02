@@ -274,8 +274,8 @@ var SingularityAPIClient = class {
       throw new SingularityAPIError(statusCode, e.message || String(e));
     }
   }
-  get(path, params) {
-    return this._req({ path, params });
+  get(path, params, quiet = false) {
+    return this._req({ path, params, quiet });
   }
   post(path, body, quiet = false) {
     return this._req({ path, method: "POST", body, quiet });
@@ -313,7 +313,7 @@ var SingularityAPIClient = class {
   }
   async getTaskById(taskId) {
     try {
-      return await this.get(`/task/${taskId}`);
+      return await this.get(`/task/${taskId}`, void 0, true);
     } catch (e) {
       if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
       throw e;
@@ -374,7 +374,7 @@ var SingularityAPIClient = class {
   async archiveTask(taskId, archiveDate) {
     try {
       const date = archiveDate ?? this.localDateString();
-      return this.patch(`/task/${taskId}`, { journalDate: date });
+      return await this.patch(`/task/${taskId}`, { journalDate: date }, true);
     } catch (e) {
       if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
       throw e;
@@ -383,7 +383,7 @@ var SingularityAPIClient = class {
   async softDeleteTask(taskId, deleteDate) {
     try {
       const date = deleteDate ?? this.localDateString();
-      return await this.patch(`/task/${taskId}`, { deleteDate: date });
+      return await this.patch(`/task/${taskId}`, { deleteDate: date }, true);
     } catch (e) {
       if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
       throw e;
@@ -391,7 +391,7 @@ var SingularityAPIClient = class {
   }
   async deleteTask(taskId) {
     try {
-      await this._req({ path: `/task/${taskId}`, method: "DELETE" });
+      await this._req({ path: `/task/${taskId}`, method: "DELETE", quiet: true });
       return true;
     } catch (e) {
       if (e instanceof SingularityAPIError && (e.statusCode === 404 || e.statusCode === 204)) return false;
@@ -400,7 +400,7 @@ var SingularityAPIClient = class {
   }
   async deleteProject(projectId) {
     try {
-      return this.patch(`/project/${projectId}`, { deleteDate: this.localDateString() });
+      return await this.patch(`/project/${projectId}`, { deleteDate: this.localDateString() }, true);
     } catch (e) {
       if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
       throw e;
@@ -438,7 +438,7 @@ var SingularityAPIClient = class {
   }
   async getProjectById(projectId) {
     try {
-      return await this.get(`/project/${projectId}`);
+      return await this.get(`/project/${projectId}`, void 0, true);
     } catch (e) {
       if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
       throw e;
@@ -446,7 +446,7 @@ var SingularityAPIClient = class {
   }
   async getNote(noteId) {
     try {
-      return await this.get(`/note/${noteId}`);
+      return await this.get(`/note/${noteId}`, void 0, true);
     } catch (e) {
       if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
       throw e;
