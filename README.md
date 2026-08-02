@@ -1,6 +1,6 @@
 # Singularity Sync
 
-![Version](https://img.shields.io/badge/version-2.2.3-blue)
+![Version](https://img.shields.io/badge/version-2.3.0-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.5%2B-purple)
 
 > **🌐 [Русская версия](README.ru.md)**
@@ -23,7 +23,7 @@
 | 📄 **Project template** | Customizable template for new project files with `{{title}}`, `{{singularity-id}}`, `{{date}}`, `{{emoji}}`, `{{note}}` |
 | 🗑️ **Soft-delete** | Removing tasks or project files in Obsidian soft-deletes them in Singularity |
 | ⚡ **Priority mapping** | 🔺⏫🔼🔽⏬ ↔ 0 / 1 / 2 |
-| 🗂️ **Conflict resolution** | 4 strategies: Latest Wins / Obsidian Wins / Singularity Wins / Manual |
+| 🗂️ **Conflict resolution** | 4 strategies: Latest Wins / Obsidian Wins / Singularity Wins / Manual — the Manual strategy shows a visual diff dialog with both versions of the task |
 | 🔒 **SecretStorage** | API key stored securely in Obsidian's protected storage, never in plain text |
 | ⏱️ **Status bar** | Last sync time displayed in the status bar |
 | 📱 **Mobile support** | Works on desktop and mobile |
@@ -136,6 +136,15 @@ If `⏰` is set without `#notify`, the plugin sends `notifies: [0]` (notify at `
 | **Soft-delete** | Removing the last synced `#todo` from a file soft-deletes the task in Singularity. Deleting a project file soft-deletes the entire project |
 | **Rename detection** | Renaming a project in Singularity automatically renames the corresponding `.md` file in Obsidian |
 | **SG tags with spaces** | Tags containing spaces from Singularity are converted: `#my tag` → `#my_tag` |
+
+### Conflict dialog (Manual strategy)
+
+When **Conflict resolution** is set to `manual`, conflicts are not resolved automatically — the plugin opens a dialog showing both versions of the task side by side:
+
+- Both versions are shown field by field (status, priority, project, tags, dates, notifications) in the same order
+- Diverging fields are highlighted with a ⚠️ badge, and a summary of the differences is shown at the top
+- Actions: **Obsidian** (keep the Obsidian version), **Singularity** (keep the Singularity version), **Skip** (decide on the next sync), and **Create new in Singularity** when the task match is ambiguous
+- Dates are displayed in your local timezone
 
 ---
 
