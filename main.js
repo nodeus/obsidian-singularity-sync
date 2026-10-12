@@ -818,7 +818,7 @@ var SingularityAPIClient = class {
   patch(path, body, quiet = false) {
     return this._req({ path, method: "PATCH", body, quiet });
   }
-  async _paginate(path, params, resultField, batchSize, opts) {
+  async _paginate(path, params, resultField, batchSize, opts, quiet = false) {
     const results = [];
     let offset = 0;
     const since = toSyncTimestamp(opts?.modifiedSince);
@@ -830,7 +830,7 @@ var SingularityAPIClient = class {
         offset,
         ...since ? { modifiedSince: since } : {},
         ...fields ? { fields } : {}
-      });
+      }, quiet);
       const batch = data[resultField] ?? [];
       results.push(...batch);
       if (batch.length < batchSize) break;
@@ -1182,15 +1182,15 @@ var SingularityAPIClient = class {
     return { results: data.results ?? [], tempIdMap: data.tempIdMap };
   }
   // ===== Kanban (read-only display for now; no drag-and-drop yet) =====
-  async getKanbanStatuses(projectId, batchSize = 200, opts) {
+  async getKanbanStatuses(projectId, batchSize = 200, opts, quiet = false) {
     const params = {};
     if (projectId) params.projectId = projectId;
-    return this._paginate("/kanban-status", params, "kanbanStatuses", batchSize, opts);
+    return this._paginate("/kanban-status", params, "kanbanStatuses", batchSize, opts, quiet);
   }
-  async getKanbanTaskLinks(taskId, batchSize = 500, opts) {
+  async getKanbanTaskLinks(taskId, batchSize = 500, opts, quiet = false) {
     const params = {};
     if (taskId) params.taskId = taskId;
-    return this._paginate("/kanban-task-status", params, "kanbanTaskStatuses", batchSize, opts);
+    return this._paginate("/kanban-task-status", params, "kanbanTaskStatuses", batchSize, opts, quiet);
   }
   /** Move a task to a kanban column (used by future DnD; sidebar is read-only). */
   async changeTaskColumn(taskId, statusId) {
@@ -1204,12 +1204,12 @@ var SingularityAPIClient = class {
   // ===== Task groups (sections, read-only for now) =====
   /** Time stats are display-only for now: one sweep (default last 30d),
    * grouped by relatedTaskId by the caller. No timer UI yet. */
-  async getTimeStats(filter = {}, batchSize = 500) {
+  async getTimeStats(filter = {}, batchSize = 500, quiet = false) {
     const params = {};
     if (filter.relatedTaskId) params.relatedTaskId = filter.relatedTaskId;
     if (filter.dateFrom) params.dateFrom = filter.dateFrom;
     if (filter.dateTo) params.dateTo = filter.dateTo;
-    return this._paginate("/time-stat", params, "timeStats", batchSize, filter);
+    return this._paginate("/time-stat", params, "timeStats", batchSize, filter, quiet);
   }
   async createTimeStat(start, secondsPassed, relatedTaskId) {
     const body = { start, secondsPassed };
@@ -1225,10 +1225,10 @@ var SingularityAPIClient = class {
       throw e;
     }
   }
-  async getTaskGroups(parent, includeRemoved = false, batchSize = 200, opts) {
+  async getTaskGroups(parent, includeRemoved = false, batchSize = 200, opts, quiet = false) {
     const params = { includeRemoved };
     if (parent) params.parent = parent;
-    return this._paginate("/task-group", params, "taskGroups", batchSize, opts);
+    return this._paginate("/task-group", params, "taskGroups", batchSize, opts, quiet);
   }
   async getTaskGroupTitle(groupId) {
     if (!this._groupTitles) {
@@ -1367,6 +1367,8 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
     this.onTaskCheck = null;
     this.onTimerToggle = null;
     this.activeTimerTaskId = null;
+    /** Session-level skip list for decoration sweeps the token may not access. */
+    this.noScopeSweeps = /* @__PURE__ */ new Set();
   }
   setStateChangeCallback(cb) {
     this.onStateChange = cb;
@@ -1396,61 +1398,64 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
     this.apiClient = client;
     await this.refresh();
   }
+  /**
+   * Best-effort decoration sweep: quiet, never throws. First 403 disables
+   * the sweep for the session with one actionable Notice (token scope).
+   */
+  async sweep(key, label, fn, fallback) {
+    if (this.noScopeSweeps.has(key)) return fallback;
+    try {
+      return await fn();
+    } catch (e) {
+      if (e?.statusCode === 403) {
+        this.noScopeSweeps.add(key);
+        new import_obsidian5.Notice(`\u26A0\uFE0F \u041D\u0435\u0442 \u043F\u0440\u0430\u0432 \u0442\u043E\u043A\u0435\u043D\u0430: ${label}. \u0412\u043A\u043B\u044E\u0447\u0438\u0442\u0435 scope \u0432 \u043A\u0430\u0431\u0438\u043D\u0435\u0442\u0435 Singularity.`, 8e3);
+      }
+      return fallback;
+    }
+  }
   async refresh() {
     if (!this.apiClient) return;
+    const client = this.apiClient;
     try {
-      this.projects = await this.apiClient.getProjects(false, false, 50);
-      this.tasks = await this.apiClient.getTasks(false, false, 200);
-      this.tasksTotal = await this.apiClient.getListTotal("/task", { includeArchived: false });
-      try {
-        const groups = await this.apiClient.getTaskGroups();
-        this.groupNames = {};
-        for (const g of groups) {
-          if (g.id && g.title) this.groupNames[g.id] = g.title;
-        }
-      } catch {
-        this.groupNames = {};
+      this.projects = await client.getProjects(false, false, 50);
+      this.tasks = await client.getTasks(false, false, 200);
+      this.tasksTotal = await client.getListTotal("/task", { includeArchived: false });
+      const groups = await this.sweep("groups", "\u0441\u0435\u043A\u0446\u0438\u0438", () => client.getTaskGroups(void 0, false, 200, void 0, true), []);
+      this.groupNames = {};
+      for (const g of groups) {
+        if (g.id && g.title) this.groupNames[g.id] = g.title;
       }
-      try {
-        const [statuses, links] = await Promise.all([
-          this.apiClient.getKanbanStatuses(),
-          this.apiClient.getKanbanTaskLinks()
-        ]);
-        const names = {};
-        this.kanbanColumns = {};
-        for (const s of statuses) {
-          if (s.id && s.name) {
-            names[s.id] = s.name;
-            if (s.projectId) {
-              if (!this.kanbanColumns[s.projectId]) this.kanbanColumns[s.projectId] = [];
-              this.kanbanColumns[s.projectId].push({ id: s.id, name: s.name });
-            }
+      const [statuses, links] = await this.sweep("kanban", "\u043A\u0430\u043D\u0431\u0430\u043D", () => Promise.all([
+        client.getKanbanStatuses(void 0, 200, void 0, true),
+        client.getKanbanTaskLinks(void 0, 500, void 0, true)
+      ]), [[], []]);
+      const names = {};
+      this.kanbanColumns = {};
+      for (const s of statuses) {
+        if (s.id && s.name) {
+          names[s.id] = s.name;
+          if (s.projectId) {
+            if (!this.kanbanColumns[s.projectId]) this.kanbanColumns[s.projectId] = [];
+            this.kanbanColumns[s.projectId].push({ id: s.id, name: s.name });
           }
         }
-        this.kanbanByTask = {};
-        this.kanbanLinkByTask = {};
-        for (const l of links) {
-          if (l.taskId && l.statusId && names[l.statusId]) {
-            this.kanbanByTask[l.taskId] = names[l.statusId];
-            this.kanbanLinkByTask[l.taskId] = l.statusId;
-          }
-        }
-      } catch {
-        this.kanbanByTask = {};
-        this.kanbanLinkByTask = {};
-        this.kanbanColumns = {};
       }
-      try {
-        const from = new Date(Date.now() - 30 * 864e5).toISOString().split("T")[0];
-        const stats = await this.apiClient.getTimeStats({ dateFrom: from });
-        this.timeByTask = {};
-        for (const s of stats) {
-          const tid = s.relatedTaskId;
-          const secs = Number(s.secondsPassed ?? 0);
-          if (tid && secs > 0) this.timeByTask[tid] = (this.timeByTask[tid] ?? 0) + secs;
+      this.kanbanByTask = {};
+      this.kanbanLinkByTask = {};
+      for (const l of links) {
+        if (l.taskId && l.statusId && names[l.statusId]) {
+          this.kanbanByTask[l.taskId] = names[l.statusId];
+          this.kanbanLinkByTask[l.taskId] = l.statusId;
         }
-      } catch {
-        this.timeByTask = {};
+      }
+      const from = new Date(Date.now() - 30 * 864e5).toISOString().split("T")[0];
+      const stats = await this.sweep("time", "\u0442\u0440\u0435\u043A\u0438\u043D\u0433 \u0432\u0440\u0435\u043C\u0435\u043D\u0438", () => client.getTimeStats({ dateFrom: from }, 500, true), []);
+      this.timeByTask = {};
+      for (const s of stats) {
+        const tid = s.relatedTaskId;
+        const secs = Number(s.secondsPassed ?? 0);
+        if (tid && secs > 0) this.timeByTask[tid] = (this.timeByTask[tid] ?? 0) + secs;
       }
     } catch (e) {
       this.contentEl.empty();
@@ -2895,6 +2900,11 @@ var ForwardSyncOrchestrator = class {
     );
     if (unanchoredCount > 0) {
       console.log(`[ForwardSync] ${unanchoredCount} unanchored checklist box(es) ignored (no anchor \u2192 parent task unknown)`);
+      notifyThrottled(
+        `\u26A0\uFE0F \u0411\u043E\u043A\u0441\u044B \u0431\u0435\u0437 %% chk:ID %% \u043D\u0435 \u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0438\u0440\u0443\u044E\u0442\u0441\u044F (\u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430 \u0440\u043E\u0434\u0438\u0442\u0435\u043B\u044C\u0441\u043A\u0430\u044F \u0437\u0430\u0434\u0430\u0447\u0430)`,
+        6e3,
+        "checklist-no-anchor"
+      );
     }
     if (anchored.length === 0) return;
     let sgItems;
@@ -4018,11 +4028,30 @@ ${noteText}
     for (const t of sgTasks) {
       if (t.id && t.projectId) projectByTask.set(t.id, t.projectId);
     }
+    const parentMissCache = /* @__PURE__ */ new Map();
+    const resolveParentProject = async (parentId) => {
+      const known = projectByTask.get(parentId);
+      if (known) return known;
+      if (parentMissCache.has(parentId)) return parentMissCache.get(parentId) ?? null;
+      let pid = null;
+      try {
+        const parentTask = await this.apiClient.getTaskById(parentId);
+        if (parentTask?.projectId) {
+          pid = parentTask.projectId;
+          projectByTask.set(parentId, pid);
+        }
+      } catch {
+      }
+      parentMissCache.set(parentId, pid);
+      return pid;
+    };
     const byFile = /* @__PURE__ */ new Map();
     let skippedInbox = 0;
     for (const it of items) {
       if (!it.id || it.removed) continue;
-      const projId = projectByTask.get(it.parent ?? "");
+      const parentId = it.parent ?? "";
+      let projId = projectByTask.get(parentId);
+      if (!projId && parentId) projId = await resolveParentProject(parentId) ?? void 0;
       const proj = projId ? this._projectsFull[projId] : null;
       const title = (proj?.title ?? "").trim();
       if (!title) {
@@ -4038,9 +4067,15 @@ ${noteText}
       console.warn(`[ReverseSync] skipped ${skippedInbox} checklist item(s) of inbox tasks (no notes section)`);
     }
     const dropMissing = !deltaSince;
+    let written = 0;
+    let mergeFailed = 0;
     for (const [filePath, sgItems] of byFile) {
       const file = this.vault.getAbstractFileByPath(filePath);
-      if (!(file instanceof import_obsidian9.TFile)) continue;
+      if (!(file instanceof import_obsidian9.TFile)) {
+        mergeFailed += sgItems.length;
+        console.warn(`[${this.runTag}ReverseSync] checklist: project file missing, ${sgItems.length} item(s) skipped: ${filePath}`);
+        continue;
+      }
       try {
         const content = await this.vault.read(file);
         const lines = content.split("\n");
@@ -4056,6 +4091,7 @@ ${sgItems.map((s) => formatChecklistLine(s.title, s.done, s.id)).join("\n")}
 `
           );
           await this.vault.modify(file, lines.join("\n"));
+          written += sgItems.length;
           continue;
         }
         const sectionLines = lines.slice(markerIdx + 1, sectionEnd);
@@ -4074,11 +4110,18 @@ ${sgItems.map((s) => formatChecklistLine(s.title, s.done, s.id)).join("\n")}
           "",
           ...lines.slice(sectionEnd)
         ].join("\n");
-        if (newContent !== content) await this.vault.modify(file, newContent);
+        if (newContent !== content) {
+          await this.vault.modify(file, newContent);
+          written += merged.appended.length + merged.lines.filter((l, i) => l !== existing[i]?.raw).length;
+        }
       } catch (e) {
-        console.warn(`[ReverseSync] checklist merge failed for ${filePath}:`, e?.message ?? e);
+        mergeFailed += sgItems.length;
+        console.warn(`[${this.runTag}ReverseSync] checklist merge failed for ${filePath}:`, e?.message ?? e);
       }
     }
+    console.log(
+      `[${this.runTag}ReverseSync] checklist: fetched ${items.length}, wrote ~${written}, skipped inbox ${skippedInbox}, failed ${mergeFailed}`
+    );
   }
   async loadTags() {
     try {
