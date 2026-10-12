@@ -160,12 +160,61 @@
   font-size: 11px;
   margin-left: auto;
 }
+.singularity-view-task-group {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.singularity-view-task-time {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.singularity-view-task-kanban {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.singularity-view-kanban-select {
+  margin-left: 6px;
+  font-size: 11px;
+  max-width: 130px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+}
+.singularity-view-timer-btn {
+  margin-left: auto;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.singularity-view-timer-btn.running {
+  color: var(--text-error, #f44336);
+  border-color: currentColor;
+}
 .singularity-view-group h4 {
   margin: 8px 12px 4px;
   font-size: 12px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+.singularity-view-counter {
+  padding: 2px 12px 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.singularity-view-projdot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: baseline;
 }
 .singularity-view-empty,
 .singularity-view-error {

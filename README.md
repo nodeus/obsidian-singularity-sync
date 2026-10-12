@@ -64,7 +64,7 @@ Only tasks with the `#todo` tag are synced. The expected format:
 - [ ] #todo Task title #tags ➕ YYYY-MM-DD ⏰ YYYY-MM-DD HH:mm 🛫 YYYY-MM-DD ⏳ YYYY-MM-DD 📅 YYYY-MM-DD 🔼 #notify/30 #notify
 ```
 
-**Standard order**: `#todo` → description → regular tags → `➕` → `⏰` → `🛫` → `⏳` → `📅` → `✅` → `❌` → priority → `#notify` tags.
+**Standard order**: `#todo` → description → regular tags → `➕` → `⏰` → `🛫` → `⏳` → `📅` → `⏱` → `✅` → `❌` → priority → `#notify` tags.
 
 Time is only allowed in `⏰` (reminder). All other date emojis (`🛫⏳📅`) use date-only format — this is required for Obsidian Tasks Plugin compatibility.
 
@@ -93,8 +93,9 @@ This is set automatically when the file is created. Do not remove or modify it m
 | 3 | `🛫` | Start date | `YYYY-MM-DD` |
 | 4 | `⏳` | Scheduled date | `YYYY-MM-DD` |
 | 5 | `📅` | Due date | `YYYY-MM-DD` |
-| 6 | `✅` | Done date | auto |
-| 7 | `❌` | Cancelled date | auto |
+| 6 | `⏱` | Duration | `30m`, `2h`, `1d`, `1h30m` |
+| 7 | `✅` | Done date | auto |
+| 8 | `❌` | Cancelled date | auto |
 
 Priority emoji (`🔺⏫🔼🔽⏬`) goes after date emoji, before notify tags. `⏰` is the only emoji that supports time — all others are date-only.
 
@@ -118,6 +119,12 @@ Priority emoji (`🔺⏫🔼🔽⏬`) goes after date emoji, before notify tags.
 
 If `⏰` is set without `#notify`, the plugin sends `notifies: [0]` (notify at `⏰` time). If no `⏰` exists, no notifications are sent.
 
+### Duration
+The `⏱` token maps to Singularity `timeLength` (minutes). Units `m`/`h`/`d` can be combined: `⏱ 30m`, `⏱ 2h`, `⏱ 1d`, `⏱ 1h30m`. Changing the token updates both sides; **removing the token does not clear the duration in Singularity**.
+
+### Checklists
+Singularity checklist items sync as `- [ ] title %% chk:ID %%` lines inside the project's `#### 📝 Notes` section. The anchor may sit anywhere in the section; free text and boxes without an anchor are never touched. Toggling a box checks/unchecks it in Singularity, renaming edits it, deleting the line deletes it. Boxes without an anchor are never created in Singularity (the parent task is unknown). Inbox tasks' items are skipped.
+
 ### Date mapping rules
 | Obsidian | Singularity | Rule |
 |----------|-------------|------|
@@ -132,8 +139,9 @@ If `⏰` is set without `#notify`, the plugin sends `notifies: [0]` (notify at `
 
 | Rule | Description |
 |------|-------------|
-| **Task matching** | Tasks are matched first by `externalId` (stored in local database), then by normalized title as fallback |
-| **Soft-delete** | Removing the last synced `#todo` from a file soft-deletes the task in Singularity. Deleting a project file soft-deletes the entire project |
+| **Task matching** | Tasks are matched first by `externalId` (stored in local database only), then by stable content hash (detects moves between files), then by normalized title as fallback |
+| **Soft-delete** | Removing the last synced `#todo` from a file soft-deletes the task in Singularity. Deleting a project file deletes the Singularity project **only** if "Delete project on file delete" is enabled (off by default) |
+| **Sync cadence** | Full sync on first run and every 24h; delta (changed tasks only) in between. Deletions made in Singularity appear on the next full sync |
 | **Rename detection** | Renaming a project in Singularity automatically renames the corresponding `.md` file in Obsidian |
 | **SG tags with spaces** | Tags containing spaces from Singularity are converted: `#my tag` → `#my_tag` |
 
@@ -244,6 +252,7 @@ days: 14
 | `Singularity Sync: Sync now` | Run full bidirectional sync |
 | `Singularity Sync: Check connection` | Validate API key and connection |
 | `Singularity Sync: Open Singularity Panel` | Open the sidebar view |
+| `Singularity Sync: Stop time tracking` | Stop the active time tracker |
 
 ---
 
@@ -258,6 +267,19 @@ days: 14
 | Habits | 100 | All habits are loaded for the panel. |
 
 If you have more than 1000 active tasks, sync will process the first 1000. Completed/archived tasks don't count towards this limit.
+
+## 🔧 Troubleshooting
+
+| Symptom | Cause | Action |
+|---------|-------|--------|
+| `❌ Настройки: ...` on sync | Invalid paths/markers/URL or missing API key | Fix the listed settings; sync is aborted before any changes |
+| Sync aborts with load error | Offline, expired token, rate limit | Nothing was created or deleted — fix the connection and retry |
+| `HTTP 400` on task update | Date without timezone (older versions) | Update the plugin; dates are sent timezone-aware since v2.4 |
+| `API key has no habit permissions` | Token scope lacks habits | Recreate the token with habit rights in your Singularity account |
+| Conflict dialog on every sync | Real two-sided edits, or `Esc` (counts as Skip) | Resolve via dialog or "apply to all"; Skip re-asks next time |
+| Deleted project file reappears | — | It doesn't: with deletion disabled the file is not recreated (console warning only) |
+| Duplicates after moving a task | — | Shouldn't happen (stable-hash relink); run `Reset & Sync` for legacy duplicates |
+| `Reset & Sync` | — | Clears local state and re-syncs Obsidian → Singularity (destructive for links, safe for data) |
 
 ## 🛡️ Security
 

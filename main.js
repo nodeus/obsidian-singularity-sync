@@ -39,12 +39,61 @@ var DEFAULT_SETTINGS = {
   syncConflictResolution: "latest_wins",
   syncExcludeTags: "GC,nd",
   syncDryRun: false,
+  deleteProjectOnFileDelete: false,
   habitDaysCount: 14
 };
+function validateSyncSettings(s, hasApiKey) {
+  const problems = [];
+  if (!hasApiKey) problems.push("\u041D\u0435 \u0437\u0430\u0434\u0430\u043D API-\u043A\u043B\u044E\u0447 Singularity");
+  try {
+    const u = new URL(s.singularityApiBaseUrl);
+    if (u.protocol !== "https:" && u.protocol !== "http:") {
+      problems.push(`API Base URL \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C http(s): ${s.singularityApiBaseUrl}`);
+    }
+  } catch {
+    problems.push(`\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 API Base URL: ${s.singularityApiBaseUrl || "(\u043F\u0443\u0441\u0442\u043E)"}`);
+  }
+  const tasksFile = (s.obsidianTasksFile ?? "").trim();
+  if (!tasksFile) problems.push("\u041D\u0435 \u0437\u0430\u0434\u0430\u043D \u0444\u0430\u0439\u043B \u0437\u0430\u0434\u0430\u0447");
+  else if (!tasksFile.startsWith("/")) problems.push(`\u0424\u0430\u0439\u043B \u0437\u0430\u0434\u0430\u0447 \u0434\u043E\u043B\u0436\u0435\u043D \u043D\u0430\u0447\u0438\u043D\u0430\u0442\u044C\u0441\u044F \u0441 /: ${tasksFile}`);
+  else if (!tasksFile.endsWith(".md")) problems.push(`\u0424\u0430\u0439\u043B \u0437\u0430\u0434\u0430\u0447 \u0434\u043E\u043B\u0436\u0435\u043D \u0437\u0430\u043A\u0430\u043D\u0447\u0438\u0432\u0430\u0442\u044C\u0441\u044F .md: ${tasksFile}`);
+  const projFolder = (s.obsidianProjectsFolder ?? "").trim();
+  if (!projFolder) problems.push("\u041D\u0435 \u0437\u0430\u0434\u0430\u043D\u0430 \u043F\u0430\u043F\u043A\u0430 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432");
+  else if (!projFolder.startsWith("/")) problems.push(`\u041F\u0430\u043F\u043A\u0430 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432 \u0434\u043E\u043B\u0436\u043D\u0430 \u043D\u0430\u0447\u0438\u043D\u0430\u0442\u044C\u0441\u044F \u0441 /: ${projFolder}`);
+  if (!(s.tasksSectionMarker ?? "").trim()) problems.push("\u041D\u0435 \u0437\u0430\u0434\u0430\u043D \u043C\u0430\u0440\u043A\u0435\u0440 \u0441\u0435\u043A\u0446\u0438\u0438 \u0437\u0430\u0434\u0430\u0447");
+  if (!(s.notesSectionMarker ?? "").trim()) problems.push("\u041D\u0435 \u0437\u0430\u0434\u0430\u043D \u043C\u0430\u0440\u043A\u0435\u0440 \u0441\u0435\u043A\u0446\u0438\u0438 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u044F");
+  if (!Number.isInteger(s.habitDaysCount) || s.habitDaysCount < 1 || s.habitDaysCount > 31) {
+    problems.push(`\u0414\u043D\u0435\u0439 \u043F\u0440\u0438\u0432\u044B\u0447\u0435\u043A \u0434\u043E\u043B\u0436\u043D\u043E \u0431\u044B\u0442\u044C 1..31, \u0441\u0435\u0439\u0447\u0430\u0441: ${s.habitDaysCount}`);
+  }
+  const tpl = s.projectTemplate ?? "";
+  if (tpl.trim()) {
+    if (!tpl.includes("{{title}}")) problems.push("\u0428\u0430\u0431\u043B\u043E\u043D \u043F\u0440\u043E\u0435\u043A\u0442\u0430 \u0431\u0435\u0437 {{title}} \u2014 \u0444\u0430\u0439\u043B\u044B \u043E\u0441\u0442\u0430\u043D\u0443\u0442\u0441\u044F \u0431\u0435\u0437 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u044F");
+    if (!tpl.includes("{{singularity-id}}")) problems.push("\u0428\u0430\u0431\u043B\u043E\u043D \u043F\u0440\u043E\u0435\u043A\u0442\u0430 \u0431\u0435\u0437 {{singularity-id}} \u2014 \u043F\u0440\u0438\u0432\u044F\u0437\u043A\u0430 \u043A \u043F\u0440\u043E\u0435\u043A\u0442\u0443 \u043F\u043E\u0442\u0435\u0440\u044F\u0435\u0442\u0441\u044F");
+  }
+  return problems;
+}
 var SingularitySyncSettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
+    this.saveTimer = null;
     this.plugin = plugin;
+  }
+  /** Debounced settings persist (500ms): text inputs fire onChange per keystroke. */
+  scheduleSave() {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.plugin.saveSettings().catch(() => {
+      });
+    }, 500);
+  }
+  hide() {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+      this.plugin.saveSettings().catch(() => {
+      });
+    }
   }
   async display() {
     const { containerEl } = this;
@@ -80,26 +129,26 @@ var SingularitySyncSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("API Base URL").setDesc("\u0411\u0430\u0437\u043E\u0432\u044B\u0439 URL API Singularity").addText(
       (text) => text.setPlaceholder("https://api.singularity-app.com/v2").setValue(this.plugin.settings.singularityApiBaseUrl).onChange(async (val) => {
         this.plugin.settings.singularityApiBaseUrl = val;
-        await this.plugin.saveSettings();
+        this.scheduleSave();
       })
     );
     containerEl.createEl("h3", { text: "\u{1F4DD} Obsidian" });
     new import_obsidian.Setting(containerEl).setName("\u0424\u0430\u0439\u043B \u0437\u0430\u0434\u0430\u0447").setDesc("\u041F\u0443\u0442\u044C \u043A \u0444\u0430\u0439\u043B\u0443 \u0437\u0430\u0434\u0430\u0447 \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u043E \u0445\u0440\u0430\u043D\u0438\u043B\u0438\u0449\u0430").addText(
       (text) => text.setPlaceholder("/tasks/tasks.md").setValue(this.plugin.settings.obsidianTasksFile).onChange(async (val) => {
         this.plugin.settings.obsidianTasksFile = val;
-        await this.plugin.saveSettings();
+        this.scheduleSave();
       })
     );
     new import_obsidian.Setting(containerEl).setName("\u041F\u0430\u043F\u043A\u0430 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432").setDesc("\u041F\u0443\u0442\u044C \u043A \u043F\u0430\u043F\u043A\u0435 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432").addText(
       (text) => text.setPlaceholder("/project").setValue(this.plugin.settings.obsidianProjectsFolder).onChange(async (val) => {
         this.plugin.settings.obsidianProjectsFolder = val;
-        await this.plugin.saveSettings();
+        this.scheduleSave();
       })
     );
     new import_obsidian.Setting(containerEl).setName("\u041C\u0430\u0440\u043A\u0435\u0440 \u0441\u0435\u043A\u0446\u0438\u0438 \u0437\u0430\u0434\u0430\u0447").setDesc("\u0417\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A, \u043F\u043E\u0441\u043B\u0435 \u043A\u043E\u0442\u043E\u0440\u043E\u0433\u043E \u0440\u0430\u0441\u043F\u043E\u043B\u0430\u0433\u0430\u044E\u0442\u0441\u044F \u0437\u0430\u0434\u0430\u0447\u0438 \u0432 \u0444\u0430\u0439\u043B\u0430\u0445 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432").addText(
       (text) => text.setPlaceholder("#### \u{1F4DD} Tasks").setValue(this.plugin.settings.tasksSectionMarker).onChange(async (val) => {
         this.plugin.settings.tasksSectionMarker = val;
-        await this.plugin.saveSettings();
+        this.scheduleSave();
       })
     );
     new import_obsidian.Setting(containerEl).setName("\u0428\u0430\u0431\u043B\u043E\u043D \u043D\u043E\u0432\u043E\u0433\u043E \u043F\u0440\u043E\u0435\u043A\u0442\u0430").setDesc("\u0428\u0430\u0431\u043B\u043E\u043D \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u043C\u043E\u0433\u043E \u0434\u043B\u044F \u043D\u043E\u0432\u044B\u0445 \u0444\u0430\u0439\u043B\u043E\u0432 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432. Placeholders: {{title}}, {{singularity-id}}, {{date}}, {{emoji}}, {{note}}. \u041E\u0441\u0442\u0430\u0432\u044C \u043F\u0443\u0441\u0442\u044B\u043C \u0434\u043B\u044F \u043F\u0440\u043E\u0441\u0442\u043E\u0433\u043E \u0448\u0430\u0431\u043B\u043E\u043D\u0430 \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E.").then((setting2) => {
@@ -107,45 +156,51 @@ var SingularitySyncSettingTab = class extends import_obsidian.PluginSettingTab {
     }).addTextArea(
       (text) => text.setPlaceholder("\u041E\u0441\u0442\u0430\u0432\u044C \u043F\u0443\u0441\u0442\u044B\u043C \u0434\u043B\u044F \u0448\u0430\u0431\u043B\u043E\u043D\u0430 \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E").setValue(this.plugin.settings.projectTemplate).onChange(async (val) => {
         this.plugin.settings.projectTemplate = val;
-        await this.plugin.saveSettings();
+        this.scheduleSave();
       })
     );
     new import_obsidian.Setting(containerEl).setName("\u041C\u0430\u0440\u043A\u0435\u0440 \u0441\u0435\u043A\u0446\u0438\u0438 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u044F").setDesc("\u0417\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A, \u043F\u043E\u0441\u043B\u0435 \u043A\u043E\u0442\u043E\u0440\u043E\u0433\u043E \u0440\u0430\u0441\u043F\u043E\u043B\u0430\u0433\u0430\u0435\u0442\u0441\u044F \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0435\u043A\u0442\u0430 (\u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0438\u0440\u0443\u0435\u0442\u0441\u044F \u0438\u0437 Singularity \u0432 Obsidian)").addText(
       (text) => text.setPlaceholder("#### \u{1F4DD} Notes").setValue(this.plugin.settings.notesSectionMarker).onChange(async (val) => {
         this.plugin.settings.notesSectionMarker = val;
-        await this.plugin.saveSettings();
+        this.scheduleSave();
       })
     );
     containerEl.createEl("h3", { text: "\u{1F504} \u0421\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u044F" });
     new import_obsidian.Setting(containerEl).setName("\u041D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435").setDesc("\u041D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u0438").addDropdown(
       (dd) => dd.addOption("both", "\u0414\u0432\u0443\u0441\u0442\u043E\u0440\u043E\u043D\u043D\u044F\u044F").addOption("forward", "Obsidian \u2192 Singularity").addOption("reverse", "Singularity \u2192 Obsidian").setValue(this.plugin.settings.syncDirection).onChange(async (val) => {
         this.plugin.settings.syncDirection = val;
-        await this.plugin.saveSettings();
+        this.scheduleSave();
       })
     );
     new import_obsidian.Setting(containerEl).setName("\u0421\u0442\u0440\u0430\u0442\u0435\u0433\u0438\u044F \u043A\u043E\u043D\u0444\u043B\u0438\u043A\u0442\u043E\u0432").setDesc("\u041A\u0430\u043A \u0440\u0430\u0437\u0440\u0435\u0448\u0430\u0442\u044C \u043A\u043E\u043D\u0444\u043B\u0438\u043A\u0442\u044B \u043F\u0440\u0438 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0438 \u0432 \u043E\u0431\u0435\u0438\u0445 \u0441\u0438\u0441\u0442\u0435\u043C\u0430\u0445").addDropdown(
       (dd) => dd.addOption("latest_wins", "\u041F\u043E\u0431\u0435\u0436\u0434\u0430\u0435\u0442 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0435 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0435").addOption("obsidian_wins", "\u041F\u043E\u0431\u0435\u0436\u0434\u0430\u0435\u0442 Obsidian").addOption("singularity_wins", "\u041F\u043E\u0431\u0435\u0436\u0434\u0430\u0435\u0442 Singularity").addOption("manual", "\u0420\u0443\u0447\u043D\u043E\u0435 \u0440\u0430\u0437\u0440\u0435\u0448\u0435\u043D\u0438\u0435").setValue(this.plugin.settings.syncConflictResolution).onChange(async (val) => {
         this.plugin.settings.syncConflictResolution = val;
-        await this.plugin.saveSettings();
+        this.scheduleSave();
       })
     );
     new import_obsidian.Setting(containerEl).setName("\u0418\u0441\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0442\u0435\u0433\u0438").setDesc("\u0422\u0435\u0433\u0438 \u0434\u043B\u044F \u0438\u0441\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F \u0438\u0437 \u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u0438 (\u0447\u0435\u0440\u0435\u0437 \u0437\u0430\u043F\u044F\u0442\u0443\u044E)").addText(
       (text) => text.setPlaceholder("GC,nd").setValue(this.plugin.settings.syncExcludeTags).onChange(async (val) => {
         this.plugin.settings.syncExcludeTags = val;
-        await this.plugin.saveSettings();
+        this.scheduleSave();
       })
     );
     new import_obsidian.Setting(containerEl).setName("Dry Run").setDesc("\u0422\u0435\u0441\u0442\u043E\u0432\u044B\u0439 \u0440\u0435\u0436\u0438\u043C \u0431\u0435\u0437 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0439").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.syncDryRun).onChange(async (val) => {
         this.plugin.settings.syncDryRun = val;
-        await this.plugin.saveSettings();
+        this.scheduleSave();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("\u0423\u0434\u0430\u043B\u044F\u0442\u044C \u043F\u0440\u043E\u0435\u043A\u0442 \u0432 Singularity \u043F\u0440\u0438 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u0438 \u0444\u0430\u0439\u043B\u0430").setDesc("\u0415\u0441\u043B\u0438 \u0444\u0430\u0439\u043B \u043F\u0440\u043E\u0435\u043A\u0442\u0430 \u0443\u0434\u0430\u043B\u0451\u043D \u0432 Obsidian \u2014 \u0443\u0434\u0430\u043B\u044F\u0442\u044C \u043F\u0440\u043E\u0435\u043A\u0442 \u0432 Singularity. \u041F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E \u0432\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u043E: \u043F\u0440\u043E\u0435\u043A\u0442 \u043E\u0441\u0442\u0430\u0451\u0442\u0441\u044F, \u0444\u0430\u0439\u043B \u043D\u0435 \u043F\u0435\u0440\u0435\u0441\u043E\u0437\u0434\u0430\u0451\u0442\u0441\u044F, \u0432 \u043A\u043E\u043D\u0441\u043E\u043B\u044C \u043F\u0438\u0448\u0435\u0442\u0441\u044F \u043F\u0440\u0435\u0434\u0443\u043F\u0440\u0435\u0436\u0434\u0435\u043D\u0438\u0435.").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.deleteProjectOnFileDelete).onChange(async (val) => {
+        this.plugin.settings.deleteProjectOnFileDelete = val;
+        this.scheduleSave();
       })
     );
     containerEl.createEl("h3", { text: "\u2705 \u041F\u0440\u0438\u0432\u044B\u0447\u043A\u0438" });
     const setting = new import_obsidian.Setting(containerEl).setName("\u0414\u043D\u0435\u0439 \u0434\u043B\u044F \u043E\u0442\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u044F").setDesc(`\u041A\u043E\u043B\u0438\u0447\u0435\u0441\u0442\u0432\u043E \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0438\u0445 \u0434\u043D\u0435\u0439 \u0434\u043B\u044F \u043E\u0442\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u044F \u043F\u0440\u043E\u0433\u0440\u0435\u0441\u0441\u0430 \u043F\u0440\u0438\u0432\u044B\u0447\u0435\u043A \u043D\u0430 \u043F\u0430\u043D\u0435\u043B\u0438 (\u0441\u0435\u0439\u0447\u0430\u0441: ${this.plugin.settings.habitDaysCount})`).addSlider(
       (slider) => slider.setLimits(1, 14, 1).setValue(this.plugin.settings.habitDaysCount).onChange(async (val) => {
         this.plugin.settings.habitDaysCount = val;
-        await this.plugin.saveSettings();
+        this.scheduleSave();
         setting.setDesc(`\u041A\u043E\u043B\u0438\u0447\u0435\u0441\u0442\u0432\u043E \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0438\u0445 \u0434\u043D\u0435\u0439 \u0434\u043B\u044F \u043E\u0442\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u044F \u043F\u0440\u043E\u0433\u0440\u0435\u0441\u0441\u0430 \u043F\u0440\u0438\u0432\u044B\u0447\u0435\u043A \u043D\u0430 \u043F\u0430\u043D\u0435\u043B\u0438 (\u0441\u0435\u0439\u0447\u0430\u0441: ${val})`);
         this.plugin.refreshSingularityView();
       })
@@ -190,6 +245,7 @@ function mapPriorityToSingularity(priority) {
 }
 function mapPriorityFromSingularity(priority) {
   if (priority == null) return null;
+  if (typeof priority === "string" && priority.trim() === "") return null;
   const p = Number(priority);
   if (isNaN(p)) return null;
   switch (p) {
@@ -204,7 +260,10 @@ function mapPriorityFromSingularity(priority) {
   }
 }
 function localOffsetString() {
-  const offsetMin = -(/* @__PURE__ */ new Date()).getTimezoneOffset();
+  return offsetStringFor(/* @__PURE__ */ new Date());
+}
+function offsetStringFor(d) {
+  const offsetMin = -d.getTimezoneOffset();
   const sign = offsetMin >= 0 ? "+" : "-";
   const abs = Math.abs(offsetMin);
   const h = String(Math.floor(abs / 60)).padStart(2, "0");
@@ -212,19 +271,25 @@ function localOffsetString() {
   return `${sign}${h}:${m}`;
 }
 function formatDateForApi(dateValue, useTime) {
+  void useTime;
   if (!dateValue) return null;
   const cleaned = dateValue.trim();
   if (/Z$/i.test(cleaned) || /[+-]\d{2}:\d{2}$/.test(cleaned)) return cleaned;
-  if (cleaned.includes(" ") && cleaned.includes(":")) {
-    const withT = cleaned.replace(" ", "T");
-    if (/T\d{2}:\d{2}$/.test(withT)) return withT + ":00" + localOffsetString();
-    return withT + localOffsetString();
-  }
-  if (cleaned.includes("T") && cleaned.includes(":")) {
-    if (/T\d{2}:\d{2}$/.test(cleaned)) return cleaned + ":00" + localOffsetString();
-    return cleaned + localOffsetString();
-  }
-  return `${cleaned}T00:00:00${localOffsetString()}`;
+  const m = cleaned.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (!m) throw new Error(`\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0434\u0430\u0442\u0430 \u0434\u043B\u044F API: "${dateValue}"`);
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const h = m[4] !== void 0 ? Number(m[4]) : 0;
+  const mi = m[5] !== void 0 ? Number(m[5]) : 0;
+  const s = m[6] !== void 0 ? Number(m[6]) : 0;
+  if (mo < 1 || mo > 12) throw new Error(`\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043C\u0435\u0441\u044F\u0446 \u0432 \u0434\u0430\u0442\u0435 \u0434\u043B\u044F API: "${dateValue}"`);
+  const dim = new Date(y, mo, 0).getDate();
+  if (d < 1 || d > dim) throw new Error(`\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0434\u0435\u043D\u044C \u0432 \u0434\u0430\u0442\u0435 \u0434\u043B\u044F API: "${dateValue}"`);
+  if (h > 23 || mi > 59 || s > 59) throw new Error(`\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0432\u0440\u0435\u043C\u044F \u0432 \u0434\u0430\u0442\u0435 \u0434\u043B\u044F API: "${dateValue}"`);
+  const at = new Date(y, mo - 1, d, h, mi, s);
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${m[1]}-${m[2]}-${m[3]}T${p2(h)}:${p2(mi)}:${p2(s)}${offsetStringFor(at)}`;
 }
 function utcIsoToLocalDate(value) {
   if (!value) return null;
@@ -271,12 +336,48 @@ function extractNotifyMinutes(text) {
   for (const m of matches) {
     if (m[1] !== void 0) {
       const n = parseInt(m[1], 10);
-      if (!isNaN(n)) minutes.push(notifyToMinutes(n, m[2]));
+      if (!isNaN(n)) minutes.push(notifyToMinutes(n, m[2]?.toLowerCase()));
     } else {
       minutes.push(0);
     }
   }
   return minutes.sort((a, b) => b - a);
+}
+
+// src/domain/utils/duration-parser.ts
+var VS = String.fromCharCode(65039) + "?";
+var TOKEN = "\u23F1" + VS;
+var DURATION_RE = new RegExp(TOKEN + "\\s*((?:\\d+\\s*[mhdMHD]\\s*)+)", "u");
+var DURATION_GLOBAL_RE = new RegExp(TOKEN + "\\s*(?:\\d+\\s*[mhdMHD]\\s*)+", "gu");
+var GROUP_RE = /(\d+)\s*([mhdMHD])/g;
+var UNIT_MINUTES = { m: 1, h: 60, d: 1440 };
+function parseDurationMinutes(text) {
+  const match = text.match(DURATION_RE);
+  if (!match) return null;
+  let total = 0;
+  let found = false;
+  GROUP_RE.lastIndex = 0;
+  let g;
+  while ((g = GROUP_RE.exec(match[1])) !== null) {
+    const unit = g[2].toLowerCase();
+    total += parseInt(g[1], 10) * (UNIT_MINUTES[unit] ?? 0);
+    found = true;
+  }
+  return found ? total : null;
+}
+function removeDuration(text) {
+  return text.replace(DURATION_GLOBAL_RE, "").replace(/\s+/g, " ").trim();
+}
+function formatDuration(minutes) {
+  const total = Math.max(0, Math.floor(minutes));
+  const d = Math.floor(total / 1440);
+  const h = Math.floor(total % 1440 / 60);
+  const m = total % 60;
+  const parts = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0 || parts.length === 0) parts.push(`${m}m`);
+  return `\u23F1 ${parts.join("")}`;
 }
 
 // src/domain/conflict-view.ts
@@ -343,7 +444,7 @@ function emojiForStatus(status) {
   return STATUS_EMOJI[status] ?? "\u25CB";
 }
 function visibleObTags(task) {
-  return task.tags.filter((t) => !/^(todo|notify)/i.test(t)).map((t) => t.replace(/\s+/g, "_")).sort();
+  return task.tags.filter((t) => !/^(todo|notify)(\/|$)/i.test(t)).map((t) => t.replace(/\s+/g, "_")).sort();
 }
 function notifyMinutesFromTask(task) {
   return extractNotifyMinutes(
@@ -404,6 +505,15 @@ function buildConflictView(ob, sg, dbState) {
   const obNotifyStr = obNotifies.length ? obNotifies.map((n) => `#notify/${n}`).join(", ") : DASH;
   const sgNotifyStr = sg && sg.notifies.length ? sg.notifies.map((n) => `#notify/${n}`).join(", ") : null;
   push("notifies", "\u{1F514} \u0423\u0432\u0435\u0434\u043E\u043C\u043B\u0435\u043D\u0438\u044F", obNotifyStr, sgNotifyStr, !!sg && normalize(obNotifyStr) !== normalize(sgNotifyStr ?? ""));
+  const obDur = ob.durationMinutes != null ? formatDuration(ob.durationMinutes) : DASH;
+  const sgDur = sg ? sg.timeLength != null ? formatDuration(sg.timeLength) : null : null;
+  push(
+    "duration",
+    "\u23F1 \u0414\u043B\u0438\u0442\u0435\u043B\u044C\u043D\u043E\u0441\u0442\u044C",
+    obDur,
+    sgDur,
+    !!sg && (ob.durationMinutes ?? null) !== (sg.timeLength ?? null)
+  );
   const obModified = dbState?.lastModifiedObsidian ? formatLocal(dbState.lastModifiedObsidian) ?? DASH : DASH;
   const sgModified = sg?.modified ? formatLocal(sg.modified) ?? DASH : null;
   push("modified-ob", "\u0418\u0437\u043C\u0435\u043D\u0435\u043D\u043E \u0432 Obsidian", obModified, null, false);
@@ -430,7 +540,16 @@ var ConflictModal = class extends import_obsidian2.Modal {
     this.singularityTask = singularityTask;
     this.dbState = dbState;
     this.options = options;
+    this.resolve = () => {
+    };
+    this.settled = false;
     this.sgMeta = null;
+  }
+  settle(choice) {
+    if (this.settled) return;
+    this.settled = true;
+    this.resolve(choice);
+    this.close();
   }
   async waitForChoice() {
     const sg = this.singularityTask;
@@ -447,6 +566,7 @@ var ConflictModal = class extends import_obsidian2.Modal {
         })
       );
       const projName = sg.projectId ? await this.options.resolveProjectName(sg.projectId) : null;
+      const groupName = sg.group && this.options.resolveGroupName ? await this.options.resolveGroupName(sg.group) : null;
       this.sgMeta = {
         title: sg.title ?? "",
         status,
@@ -454,13 +574,15 @@ var ConflictModal = class extends import_obsidian2.Modal {
         priorityEmoji,
         tags: tagNames,
         projectName: projName,
+        groupName,
         createdDate: sg.createdDate ?? null,
         start: sg.start ?? null,
         deadline: sg.deadline ?? null,
         journalDate: sg.journalDate ?? null,
         deleteDate: sg.deleteDate ?? null,
         notifies: Array.isArray(sg.notifies) ? sg.notifies : [],
-        modified: sg.modificatedDate ?? null
+        modified: sg.modificatedDate ?? null,
+        timeLength: typeof sg.timeLength === "number" ? sg.timeLength : null
       };
     }
     return new Promise((resolve) => {
@@ -473,8 +595,9 @@ var ConflictModal = class extends import_obsidian2.Modal {
     contentEl.empty();
     contentEl.addClass("singularity-conflict-modal");
     const isTitleMatch = this.options.reason === "title_match";
+    const progress = this.options.progress;
     contentEl.createEl("h2", {
-      text: isTitleMatch ? "\u26A0\uFE0F \u041D\u0435\u043E\u0434\u043D\u043E\u0437\u043D\u0430\u0447\u043D\u043E\u0435 \u0441\u043E\u043F\u043E\u0441\u0442\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u0437\u0430\u0434\u0430\u0447" : "\u26A0\uFE0F \u041A\u043E\u043D\u0444\u043B\u0438\u043A\u0442 \u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u0438"
+      text: (isTitleMatch ? "\u26A0\uFE0F \u041D\u0435\u043E\u0434\u043D\u043E\u0437\u043D\u0430\u0447\u043D\u043E\u0435 \u0441\u043E\u043F\u043E\u0441\u0442\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u0437\u0430\u0434\u0430\u0447" : "\u26A0\uFE0F \u041A\u043E\u043D\u0444\u043B\u0438\u043A\u0442 \u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u0438") + (progress ? ` \u2014 \u2116${progress.current}` : "")
     });
     contentEl.createEl("p", {
       text: isTitleMatch ? "\u0417\u0430\u0434\u0430\u0447\u0430 \u043D\u0430\u0439\u0434\u0435\u043D\u0430 \u0432 Singularity \u043F\u043E \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043A\u0443, \u043D\u043E \u0442\u043E\u0447\u043D\u0430\u044F \u043F\u0440\u0438\u0432\u044F\u0437\u043A\u0430 \u043D\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0430. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u043E\u043B\u044F \u0438 \u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435." : "\u0417\u0430\u0434\u0430\u0447\u0430 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0430 \u0432 \u043E\u0431\u0435\u0438\u0445 \u0441\u0438\u0441\u0442\u0435\u043C\u0430\u0445. \u0421\u0440\u0430\u0432\u043D\u0438\u0442\u0435 \u0432\u0435\u0440\u0441\u0438\u0438 \u0438 \u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435, \u043A\u0430\u043A\u0443\u044E \u043F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C."
@@ -495,37 +618,38 @@ var ConflictModal = class extends import_obsidian2.Modal {
         text: "\u{1F4DD} Obsidian",
         hint: "\u0417\u0430\u043F\u0438\u0441\u0430\u0442\u044C Obsidian-\u0432\u0435\u0440\u0441\u0438\u044E \u0432 Singularity",
         cta: true,
-        action: () => {
-          this.resolve("obsidian");
-          this.close();
-        }
+        action: () => this.settle("obsidian")
       },
       {
         text: "\u2601\uFE0F Singularity",
         hint: "\u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C \u0432\u0435\u0440\u0441\u0438\u044E \u0438\u0437 Singularity \u2014 Obsidian \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u0441\u044F \u043D\u0430 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u043C \u0441\u0438\u043D\u043A\u0435",
-        action: () => {
-          this.resolve("singularity");
-          this.close();
-        }
+        action: () => this.settle("singularity")
       }
     ];
     if (isTitleMatch) {
       buttons.push({
         text: "\u2795 \u0421\u043E\u0437\u0434\u0430\u0442\u044C \u043D\u043E\u0432\u0443\u044E \u0432 Singularity",
         hint: "\u0421\u043E\u0437\u0434\u0430\u0442\u044C \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u0443\u044E \u0437\u0430\u0434\u0430\u0447\u0443, \u043D\u0435 \u0442\u0440\u043E\u0433\u0430\u044F \u043D\u0430\u0439\u0434\u0435\u043D\u043D\u0443\u044E",
-        action: () => {
-          this.resolve("new");
-          this.close();
-        }
+        action: () => this.settle("new")
       });
+    } else {
+      buttons.push(
+        {
+          text: "\u{1F4DD} Obsidian \u0434\u043B\u044F \u0432\u0441\u0435\u0445",
+          hint: "\u0417\u0430\u043F\u0438\u0441\u0430\u0442\u044C Obsidian-\u0432\u0435\u0440\u0441\u0438\u0438 \u0434\u043B\u044F \u044D\u0442\u043E\u0433\u043E \u0438 \u0432\u0441\u0435\u0445 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0438\u0445 \u043A\u043E\u043D\u0444\u043B\u0438\u043A\u0442\u043E\u0432",
+          action: () => this.settle("obsidian_all")
+        },
+        {
+          text: "\u2601\uFE0F Singularity \u0434\u043B\u044F \u0432\u0441\u0435\u0445",
+          hint: "\u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C \u0432\u0435\u0440\u0441\u0438\u0438 Singularity \u0434\u043B\u044F \u044D\u0442\u043E\u0433\u043E \u0438 \u0432\u0441\u0435\u0445 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0438\u0445 \u043A\u043E\u043D\u0444\u043B\u0438\u043A\u0442\u043E\u0432",
+          action: () => this.settle("singularity_all")
+        }
+      );
     }
     buttons.push({
       text: "\u23ED\uFE0F \u041F\u0440\u043E\u043F\u0443\u0441\u0442\u0438\u0442\u044C",
       hint: "\u041D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u043C\u0435\u043D\u044F\u0442\u044C \u2014 \u0441\u043F\u0440\u043E\u0441\u0438\u0442\u044C \u043F\u0440\u0438 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0439 \u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u0438",
-      action: () => {
-        this.resolve("skip");
-        this.close();
-      }
+      action: () => this.settle("skip")
     });
     const footer = contentEl.createDiv({ cls: "singularity-conflict-buttons" });
     for (const spec of buttons) {
@@ -552,7 +676,10 @@ var ConflictModal = class extends import_obsidian2.Modal {
       const titleEl = panel.createDiv({ cls: "singularity-conflict-task-title" });
       titleEl.setText(sg.title || "\u2014");
       const loc = panel.createDiv({ cls: "singularity-conflict-task-loc" });
-      loc.setText(this.sgMeta?.projectName ? `\u041F\u0440\u043E\u0435\u043A\u0442: ${this.sgMeta.projectName}` : "\u2014");
+      const locParts = [];
+      if (this.sgMeta?.projectName) locParts.push(`\u041F\u0440\u043E\u0435\u043A\u0442: ${this.sgMeta.projectName}`);
+      if (this.sgMeta?.groupName) locParts.push(`\u0421\u0435\u043A\u0446\u0438\u044F: ${this.sgMeta.groupName}`);
+      loc.setText(locParts.length ? locParts.join(" \xB7 ") : "\u2014");
     } else {
       panel.createEl("p", { text: "\u041D\u0435\u0442 \u0434\u0430\u043D\u043D\u044B\u0445", cls: "singularity-view-empty" });
       return;
@@ -579,11 +706,30 @@ var ConflictModal = class extends import_obsidian2.Modal {
   onClose() {
     const { contentEl } = this;
     contentEl.empty();
+    if (!this.settled) {
+      this.settled = true;
+      this.resolve("skip");
+    }
   }
 };
 
 // src/adapters/singularity/api-client.ts
+var import_obsidian4 = require("obsidian");
+
+// src/ui/notify.ts
 var import_obsidian3 = require("obsidian");
+var lastShown = /* @__PURE__ */ new Map();
+var WINDOW_MS = 15e3;
+function notifyThrottled(text, timeoutMs = 8e3, key) {
+  const k = key ?? text;
+  const now = Date.now();
+  const last = lastShown.get(k) ?? 0;
+  if (now - last < WINDOW_MS) return;
+  lastShown.set(k, now);
+  new import_obsidian3.Notice(text, timeoutMs);
+}
+
+// src/adapters/singularity/api-client.ts
 var SingularityAPIError = class extends Error {
   constructor(statusCode, message, response) {
     super(`Singularity API Error ${statusCode}: ${message}`);
@@ -592,11 +738,34 @@ var SingularityAPIError = class extends Error {
     this.name = "SingularityAPIError";
   }
 };
+function toSyncTimestamp(value) {
+  if (!value) return void 0;
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) return void 0;
+  return d.toISOString();
+}
+function isReadOnly(method) {
+  return !method || method === "GET";
+}
+function isRetryable(statusCode, method) {
+  if (statusCode === 400 || statusCode === 401 || statusCode === 403 || statusCode === 404) return false;
+  if (isReadOnly(method)) return statusCode === 0 || statusCode === 429 || statusCode >= 500;
+  return statusCode === 0;
+}
+function retryDelayMs(attempt) {
+  const base = 500 * Math.pow(2, attempt - 1);
+  return base + Math.floor(Math.random() * 250);
+}
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 var SingularityAPIClient = class {
   constructor(config) {
     this._tagsCache = {};
     this._tagsLoaded = false;
     this._tagTitles = null;
+    /** Resolve a group ID to its title (lazy full load, cached). */
+    this._groupTitles = null;
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
     this.headers = {
       Authorization: `Bearer ${config.apiKey}`,
@@ -616,19 +785,28 @@ var SingularityAPIClient = class {
       req.body = typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body);
       req.contentType = "application/json";
     }
-    try {
-      const resp = await (0, import_obsidian3.requestUrl)(req);
-      return resp.json;
-    } catch (e) {
-      if (e instanceof SingularityAPIError) throw e;
-      const match = e.message?.match(/(\d{3})/);
-      const statusCode = match ? parseInt(match[1]) : 0;
-      if (!opts.quiet) {
-        const maskedHeaders = { ...req.headers, Authorization: "***" };
-        console.error(`[Singularity API] ${opts.method || "GET"} ${opts.path} \u2192 ${statusCode} url=${url} body=${JSON.stringify(opts.body)} error=${e.message} req=${JSON.stringify({ url: req.url, method: req.method, headers: maskedHeaders, contentType: req.contentType, bodyLength: req.body?.length })}`);
-        new import_obsidian3.Notice(`\u26A0\uFE0F API ${statusCode}: ${opts.method || "GET"} ${opts.path}`, 8e3);
+    const maxAttempts = isReadOnly(opts.method) ? 4 : 2;
+    let attempt = 0;
+    for (; ; ) {
+      try {
+        const resp = await (0, import_obsidian4.requestUrl)(req);
+        return resp.json;
+      } catch (e) {
+        if (e instanceof SingularityAPIError) throw e;
+        const match = e.message?.match(/(\d{3})/);
+        const statusCode = match ? parseInt(match[1]) : 0;
+        attempt++;
+        if (attempt < maxAttempts && isRetryable(statusCode, opts.method)) {
+          await sleepMs(retryDelayMs(attempt));
+          continue;
+        }
+        if (!opts.quiet) {
+          const maskedHeaders = { ...req.headers, Authorization: "***" };
+          console.error(`[Singularity API] ${opts.method || "GET"} ${opts.path} \u2192 ${statusCode} url=${url} body=${JSON.stringify(opts.body)} error=${e.message} req=${JSON.stringify({ url: req.url, method: req.method, headers: maskedHeaders, contentType: req.contentType, bodyLength: req.body?.length })}`);
+          notifyThrottled(`\u26A0\uFE0F API ${statusCode}: ${opts.method || "GET"} ${opts.path}`, 8e3);
+        }
+        throw new SingularityAPIError(statusCode, e.message || String(e));
       }
-      throw new SingularityAPIError(statusCode, e.message || String(e));
     }
   }
   get(path, params, quiet = false) {
@@ -640,17 +818,36 @@ var SingularityAPIClient = class {
   patch(path, body, quiet = false) {
     return this._req({ path, method: "PATCH", body, quiet });
   }
-  async _paginate(path, params, resultField, batchSize) {
+  async _paginate(path, params, resultField, batchSize, opts) {
     const results = [];
     let offset = 0;
+    const since = toSyncTimestamp(opts?.modifiedSince);
+    const fields = opts?.fields?.trim() || void 0;
     while (true) {
-      const data = await this.get(path, { ...params, maxCount: batchSize, offset });
+      const data = await this.get(path, {
+        ...params,
+        maxCount: batchSize,
+        offset,
+        ...since ? { modifiedSince: since } : {},
+        ...fields ? { fields } : {}
+      });
       const batch = data[resultField] ?? [];
       results.push(...batch);
       if (batch.length < batchSize) break;
       offset += batchSize;
     }
     return results;
+  }
+  /** Single cheap request returning the server-side total for a list
+   * (paginationData block), used for honest "shown N of M" counters. */
+  async getListTotal(path, params = {}) {
+    try {
+      const data = await this.get(path, { ...params, maxCount: 1, offset: 0, paginationData: true }, true);
+      const total = data?.pagination?.total;
+      return typeof total === "number" ? total : null;
+    } catch {
+      return null;
+    }
   }
   async validateToken() {
     try {
@@ -660,13 +857,13 @@ var SingularityAPIClient = class {
       return false;
     }
   }
-  async getProjects(includeRemoved = false, includeArchived = false, batchSize = 100) {
-    return this._paginate("/project", { includeRemoved, includeArchived }, "projects", batchSize);
+  async getProjects(includeRemoved = false, includeArchived = false, batchSize = 100, opts) {
+    return this._paginate("/project", { includeRemoved, includeArchived }, "projects", batchSize, opts);
   }
-  async getTasks(includeRemoved = false, includeArchived = false, batchSize = 1e3, projectId) {
+  async getTasks(includeRemoved = false, includeArchived = false, batchSize = 1e3, projectId, opts) {
     const params = { includeRemoved, includeArchived };
     if (projectId) params.projectId = projectId;
-    return this._paginate("/task", params, "tasks", batchSize);
+    return this._paginate("/task", params, "tasks", batchSize, opts);
   }
   async getTaskById(taskId) {
     try {
@@ -677,6 +874,10 @@ var SingularityAPIClient = class {
     }
   }
   async createTask(task) {
+    return this.post("/task", this.toCreateBody(task));
+  }
+  /** Build the POST /task body (shared by single and batch creates). */
+  toCreateBody(task) {
     const body = {
       title: task.title,
       state: 1,
@@ -693,11 +894,50 @@ var SingularityAPIClient = class {
     }
     if (task.start) body.start = task.start;
     if (task.externalId) body.externalId = task.externalId;
+    if (task.timeLength != null) body.timeLength = task.timeLength;
     if (task.tags?.length) body.tags = task.tags;
     if (task.notifies?.length) body.notifies = task.notifies;
     if (task.journalDate) body.journalDate = task.journalDate;
     if (task.deleteDate) body.deleteDate = task.deleteDate;
-    return this.post("/task", body);
+    return body;
+  }
+  /**
+   * Bulk-create tasks in one /batch call. Returns one entry per input (null
+   * when that item failed even after the individual fallback), order kept.
+   */
+  async createTasksBatch(tasks) {
+    if (tasks.length === 0) return [];
+    if (tasks.length === 1) {
+      try {
+        return [await this.createTask(tasks[0])];
+      } catch (e) {
+        console.error(`[Singularity API] create failed:`, e?.message ?? e);
+        return [null];
+      }
+    }
+    const out = tasks.map(() => null);
+    try {
+      const { results } = await this.executeBatch(
+        tasks.map((t, i) => ({ method: "POST", path: "/v2/task", body: this.toCreateBody(t), uuid: `c${i}` }))
+      );
+      const byUuid = new Map(results.map((r) => [r.uuid, r]));
+      for (let i = 0; i < tasks.length; i++) {
+        const r = byUuid.get(`c${i}`);
+        if (r && r.status >= 200 && r.status < 300 && r.body?.id) out[i] = r.body;
+      }
+    } catch (e) {
+      console.warn(`[Singularity API] batch create failed, falling back to individual:`, e?.message ?? e);
+    }
+    for (let i = 0; i < tasks.length; i++) {
+      if (!out[i]) {
+        try {
+          out[i] = await this.createTask(tasks[i]);
+        } catch (e) {
+          console.error(`[Singularity API] fallback create failed:`, e?.message ?? e);
+        }
+      }
+    }
+    return out;
   }
   async updateTask(taskId, task) {
     const body = {};
@@ -714,6 +954,7 @@ var SingularityAPIClient = class {
       body.useTime = true;
     }
     if (task.start != null) body.start = task.start;
+    if (task.timeLength != null) body.timeLength = task.timeLength;
     if (task.notifies !== void 0) body.notifies = task.notifies;
     if (task.journalDate != null) body.journalDate = task.journalDate;
     if (task.deleteDate != null) body.deleteDate = task.deleteDate;
@@ -731,7 +972,57 @@ var SingularityAPIClient = class {
   async archiveTask(taskId, archiveDate) {
     try {
       const date = archiveDate ?? this.localDateString();
-      return await this.patch(`/task/${taskId}`, { journalDate: date }, true);
+      return await this.post(`/task/${taskId}/archive`, { journalDate: date }, true);
+    } catch (e) {
+      if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+  /** Semantic status transitions (POST actions). Idempotent: 404 → null.
+   * Prefer these over raw PATCH checked=… when only the status flips. */
+  async completeTask(taskId) {
+    try {
+      return await this.post(`/task/${taskId}/complete`, {}, true);
+    } catch (e) {
+      if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+  async uncompleteTask(taskId) {
+    try {
+      return await this.post(`/task/${taskId}/uncomplete`, {}, true);
+    } catch (e) {
+      if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+  async completeTaskToday(taskId) {
+    try {
+      return await this.post(`/task/${taskId}/complete-today`, {}, true);
+    } catch (e) {
+      if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+  async cancelTask(taskId) {
+    try {
+      return await this.post(`/task/${taskId}/cancel`, {}, true);
+    } catch (e) {
+      if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+  async unarchiveTask(taskId) {
+    try {
+      return await this.post(`/task/${taskId}/unarchive`, {}, true);
+    } catch (e) {
+      if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+  async moveTask(taskId, projectId) {
+    try {
+      return await this.post(`/task/${taskId}/move`, { projectId }, true);
     } catch (e) {
       if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
       throw e;
@@ -763,8 +1054,8 @@ var SingularityAPIClient = class {
       throw e;
     }
   }
-  async getTags(batchSize = 100, includeRemoved = false) {
-    return this._paginate("/tag", { includeRemoved }, "tags", batchSize);
+  async getTags(batchSize = 100, includeRemoved = false, opts) {
+    return this._paginate("/tag", { includeRemoved }, "tags", batchSize, opts);
   }
   async createTag(title) {
     return this.post("/tag", { title });
@@ -828,18 +1119,163 @@ var SingularityAPIClient = class {
   async updateProject(projectId, data) {
     return this.patch(`/project/${projectId}`, data);
   }
-  async getHabits(maxCount = 100) {
-    const data = await this.get("/habit", { maxCount });
-    return data.habits ?? [];
+  async getHabits(batchSize = 100, opts) {
+    return this._paginate("/habit", {}, "habits", batchSize, opts);
   }
-  async getHabitProgress(habitId) {
+  /** All habit-progress records (paginated), for panels that need the full map. */
+  async getAllHabitProgress(batchSize = 500) {
+    const envelope = await this._paginateRaw("/habit-progress", {}, void 0, batchSize);
+    const list = envelope.progressRecords ?? [];
+    return Array.isArray(list) ? list : [];
+  }
+  // ===== Checklist items =====
+  async getChecklistItems(parent, includeRemoved = false, batchSize = 500, opts) {
+    const params = { includeRemoved };
+    if (parent) params.parent = parent;
+    return this._paginate("/checklist-item", params, "checklistItems", batchSize, opts);
+  }
+  async getChecklistItem(itemId) {
     try {
-      const data = await this.get("/habit-progress", { maxCount: 500 });
+      return await this.get(`/checklist-item/${itemId}`, void 0, true);
+    } catch (e) {
+      if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+  async createChecklistItem(parent, title) {
+    return this.post("/checklist-item", { parent, title });
+  }
+  async updateChecklistItem(itemId, data) {
+    return this.patch(`/checklist-item/${itemId}`, data);
+  }
+  async checkChecklistItem(itemId) {
+    try {
+      return await this.post(`/checklist-item/${itemId}/check`, {}, true);
+    } catch (e) {
+      if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+  async uncheckChecklistItem(itemId) {
+    try {
+      return await this.post(`/checklist-item/${itemId}/uncheck`, {}, true);
+    } catch (e) {
+      if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+  async deleteChecklistItem(itemId) {
+    try {
+      await this._req({ path: `/checklist-item/${itemId}`, method: "DELETE", quiet: true });
+      return true;
+    } catch (e) {
+      if (e instanceof SingularityAPIError && (e.statusCode === 404 || e.statusCode === 204)) return false;
+      throw e;
+    }
+  }
+  // ===== Batch =====
+  /** Execute a batch of REST operations in one request. Per-operation status
+   * codes are in results — a 200 envelope does NOT mean every op succeeded. */
+  async executeBatch(operations) {
+    if (operations.length === 0) return { results: [] };
+    const data = await this.post("/batch", { operations });
+    return { results: data.results ?? [], tempIdMap: data.tempIdMap };
+  }
+  // ===== Kanban (read-only display for now; no drag-and-drop yet) =====
+  async getKanbanStatuses(projectId, batchSize = 200, opts) {
+    const params = {};
+    if (projectId) params.projectId = projectId;
+    return this._paginate("/kanban-status", params, "kanbanStatuses", batchSize, opts);
+  }
+  async getKanbanTaskLinks(taskId, batchSize = 500, opts) {
+    const params = {};
+    if (taskId) params.taskId = taskId;
+    return this._paginate("/kanban-task-status", params, "kanbanTaskStatuses", batchSize, opts);
+  }
+  /** Move a task to a kanban column (used by future DnD; sidebar is read-only). */
+  async changeTaskColumn(taskId, statusId) {
+    try {
+      return await this.post(`/task/${taskId}/change-column`, { statusId }, true);
+    } catch (e) {
+      if (e instanceof SingularityAPIError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+  // ===== Task groups (sections, read-only for now) =====
+  /** Time stats are display-only for now: one sweep (default last 30d),
+   * grouped by relatedTaskId by the caller. No timer UI yet. */
+  async getTimeStats(filter = {}, batchSize = 500) {
+    const params = {};
+    if (filter.relatedTaskId) params.relatedTaskId = filter.relatedTaskId;
+    if (filter.dateFrom) params.dateFrom = filter.dateFrom;
+    if (filter.dateTo) params.dateTo = filter.dateTo;
+    return this._paginate("/time-stat", params, "timeStats", batchSize, filter);
+  }
+  async createTimeStat(start, secondsPassed, relatedTaskId) {
+    const body = { start, secondsPassed };
+    if (relatedTaskId) body.relatedTaskId = relatedTaskId;
+    return this.post("/time-stat", body);
+  }
+  async deleteTimeStat(statId) {
+    try {
+      await this._req({ path: `/time-stat/${statId}`, method: "DELETE", quiet: true });
+      return true;
+    } catch (e) {
+      if (e instanceof SingularityAPIError && (e.statusCode === 404 || e.statusCode === 204)) return false;
+      throw e;
+    }
+  }
+  async getTaskGroups(parent, includeRemoved = false, batchSize = 200, opts) {
+    const params = { includeRemoved };
+    if (parent) params.parent = parent;
+    return this._paginate("/task-group", params, "taskGroups", batchSize, opts);
+  }
+  async getTaskGroupTitle(groupId) {
+    if (!this._groupTitles) {
+      this._groupTitles = {};
+      try {
+        const groups = await this.getTaskGroups();
+        for (const g of groups) {
+          if (g.id && g.title) this._groupTitles[g.id] = g.title;
+        }
+      } catch {
+        return null;
+      }
+    }
+    return this._groupTitles[groupId] ?? null;
+  }
+  async getHabitProgress(habitId, opts) {
+    try {
+      const data = await this._paginateRaw("/habit-progress", { habit: habitId }, opts);
       const list = Array.isArray(data) ? data : data.progressRecords ?? data.progress ?? [];
-      return list.filter((p) => p.habit === habitId);
+      return list.filter((p) => p.habit === habitId || !p.habit);
     } catch {
       return [];
     }
+  }
+  /** Paginated fetch returning the raw envelope (for endpoints whose list
+   * field differs or needs post-filtering). */
+  async _paginateRaw(path, params, opts, batchSize = 500) {
+    const merged = [];
+    let offset = 0;
+    const since = toSyncTimestamp(opts?.modifiedSince);
+    const fields = opts?.fields?.trim() || void 0;
+    let envelope = null;
+    while (true) {
+      envelope = await this.get(path, {
+        ...params,
+        maxCount: batchSize,
+        offset,
+        ...since ? { modifiedSince: since } : {},
+        ...fields ? { fields } : {}
+      });
+      const batch = envelope.progressRecords ?? envelope.progress ?? envelope.habits ?? [];
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      merged.push(...batch);
+      if (batch.length < batchSize) break;
+      offset += batchSize;
+    }
+    return { ...envelope, progressRecords: merged, progress: merged };
   }
   async setHabitProgress(habitId, date, progress) {
     const dateKey = date.replace(/-/g, "");
@@ -863,7 +1299,7 @@ var SingularityAPIClient = class {
 };
 
 // src/ui/singularity-view.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var SINGULARITY_VIEW_TYPE = "singularity-tasks-view";
 var DAY_MS = 864e5;
 function fmtLocal(d) {
@@ -873,6 +1309,17 @@ function fmtLocal(d) {
   return `${y}-${m}-${day}`;
 }
 var WEEKDAYS = ["\u0412\u0441", "\u041F\u043D", "\u0412\u0442", "\u0421\u0440", "\u0427\u0442", "\u041F\u0442", "\u0421\u0431"];
+function fmtTracked(totalSeconds) {
+  const mins = Math.floor(totalSeconds / 60);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h > 0) return `${h}\u0447 ${m}\u043C`;
+  return `${m}\u043C`;
+}
+function projectLabel(p) {
+  const name = p.title || p.id || "\u2014";
+  return p.isNotebook ? `\u{1F4D3} ${name}` : name;
+}
 var COLORS = {
   red: "#f44336",
   pink: "#e91e63",
@@ -893,12 +1340,22 @@ var COLORS = {
   grey: "#9e9e9e",
   blueGrey: "#607d8b"
 };
-var SingularityTaskView = class extends import_obsidian4.ItemView {
+var SingularityTaskView = class extends import_obsidian5.ItemView {
   constructor(leaf) {
     super(leaf);
     this.apiClient = null;
     this.tasks = [];
+    this.tasksTotal = null;
     this.projects = [];
+    this.groupNames = {};
+    /** Tracked seconds per SG task id over the displayed window. */
+    this.timeByTask = {};
+    /** Kanban column name per SG task id. */
+    this.kanbanByTask = {};
+    /** Kanban status id per SG task id (for moves). */
+    this.kanbanLinkByTask = {};
+    /** Kanban columns per project id. */
+    this.kanbanColumns = {};
     this.habits = [];
     this.habitsProgress = {};
     // habitId → date → progress (1/2)
@@ -908,12 +1365,17 @@ var SingularityTaskView = class extends import_obsidian4.ItemView {
     this.selectedProject = "";
     this.onStateChange = null;
     this.onTaskCheck = null;
+    this.onTimerToggle = null;
+    this.activeTimerTaskId = null;
   }
   setStateChangeCallback(cb) {
     this.onStateChange = cb;
   }
   setTaskCheckCallback(cb) {
     this.onTaskCheck = cb;
+  }
+  setTimerToggleCallback(cb) {
+    this.onTimerToggle = cb;
   }
   loadState(state) {
     this.habitsProgress = state;
@@ -939,6 +1401,57 @@ var SingularityTaskView = class extends import_obsidian4.ItemView {
     try {
       this.projects = await this.apiClient.getProjects(false, false, 50);
       this.tasks = await this.apiClient.getTasks(false, false, 200);
+      this.tasksTotal = await this.apiClient.getListTotal("/task", { includeArchived: false });
+      try {
+        const groups = await this.apiClient.getTaskGroups();
+        this.groupNames = {};
+        for (const g of groups) {
+          if (g.id && g.title) this.groupNames[g.id] = g.title;
+        }
+      } catch {
+        this.groupNames = {};
+      }
+      try {
+        const [statuses, links] = await Promise.all([
+          this.apiClient.getKanbanStatuses(),
+          this.apiClient.getKanbanTaskLinks()
+        ]);
+        const names = {};
+        this.kanbanColumns = {};
+        for (const s of statuses) {
+          if (s.id && s.name) {
+            names[s.id] = s.name;
+            if (s.projectId) {
+              if (!this.kanbanColumns[s.projectId]) this.kanbanColumns[s.projectId] = [];
+              this.kanbanColumns[s.projectId].push({ id: s.id, name: s.name });
+            }
+          }
+        }
+        this.kanbanByTask = {};
+        this.kanbanLinkByTask = {};
+        for (const l of links) {
+          if (l.taskId && l.statusId && names[l.statusId]) {
+            this.kanbanByTask[l.taskId] = names[l.statusId];
+            this.kanbanLinkByTask[l.taskId] = l.statusId;
+          }
+        }
+      } catch {
+        this.kanbanByTask = {};
+        this.kanbanLinkByTask = {};
+        this.kanbanColumns = {};
+      }
+      try {
+        const from = new Date(Date.now() - 30 * 864e5).toISOString().split("T")[0];
+        const stats = await this.apiClient.getTimeStats({ dateFrom: from });
+        this.timeByTask = {};
+        for (const s of stats) {
+          const tid = s.relatedTaskId;
+          const secs = Number(s.secondsPassed ?? 0);
+          if (tid && secs > 0) this.timeByTask[tid] = (this.timeByTask[tid] ?? 0) + secs;
+        }
+      } catch {
+        this.timeByTask = {};
+      }
     } catch (e) {
       this.contentEl.empty();
       this.contentEl.createEl("p", { text: `\u274C \u041E\u0448\u0438\u0431\u043A\u0430 \u0437\u0430\u0434\u0430\u0447: ${e.message}`, cls: "singularity-view-error" });
@@ -987,10 +1500,12 @@ var SingularityTaskView = class extends import_obsidian4.ItemView {
     const filter = container.createEl("select", "singularity-view-filter");
     filter.createEl("option", { text: "\u0412\u0441\u0435 \u043F\u0440\u043E\u0435\u043A\u0442\u044B", value: "" });
     const projMap = {};
+    const projById = {};
     for (const p of this.projects) {
       const name = p.title || p.id || "\u2014";
       projMap[p.id] = name;
-      filter.createEl("option", { text: name, value: p.id });
+      projById[p.id] = p;
+      filter.createEl("option", { text: projectLabel(p), value: p.id });
     }
     filter.value = this.selectedProject;
     filter.onchange = () => {
@@ -998,7 +1513,7 @@ var SingularityTaskView = class extends import_obsidian4.ItemView {
       this.render();
     };
     let filtered = this.selectedProject ? this.tasks.filter((t) => t.projectId === this.selectedProject) : this.tasks;
-    filtered = filtered.filter((t) => !t.recurrence);
+    filtered = filtered.filter((t) => !t.recurrence && !t.isNote);
     if (excludedList.length > 0) {
       filtered = filtered.filter((t) => {
         const tagIds = t.tags ?? [];
@@ -1007,6 +1522,10 @@ var SingularityTaskView = class extends import_obsidian4.ItemView {
       });
     }
     const list = container.createDiv("singularity-view-list");
+    const counter = list.createDiv({ cls: "singularity-view-counter" });
+    counter.setText(
+      this.tasksTotal != null ? `\u041F\u043E\u043A\u0430\u0437\u0430\u043D\u043E ${filtered.length} \u0438\u0437 ${this.tasksTotal} (\u043F\u0430\u043D\u0435\u043B\u044C: \u043F\u0435\u0440\u0432\u044B\u0435 200)` : `\u041F\u043E\u043A\u0430\u0437\u0430\u043D\u043E ${filtered.length}`
+    );
     if (filtered.length === 0) {
       list.createEl("p", { text: "\u2705 \u041D\u0435\u0442 \u0437\u0430\u0434\u0430\u0447", cls: "singularity-view-empty" });
       return;
@@ -1018,23 +1537,88 @@ var SingularityTaskView = class extends import_obsidian4.ItemView {
       grouped[proj].push(task);
     }
     for (const [projId, tasks] of Object.entries(grouped)) {
+      const proj = projById[projId];
       const projName = projId === "__no_project" ? "\u{1F4E5} \u0412\u0445\u043E\u0434\u044F\u0449\u0438\u0435" : projMap[projId] || projId;
       const groupEl = list.createDiv("singularity-view-group");
-      groupEl.createEl("h4", { text: projName });
+      const h4 = groupEl.createEl("h4");
+      if (proj?.color) {
+        const dot = h4.createSpan({ cls: "singularity-view-projdot" });
+        dot.style.background = String(proj.color);
+        dot.style.backgroundColor = String(proj.color);
+      }
+      h4.appendText(projName);
       for (const task of tasks) {
         const item = groupEl.createDiv("singularity-view-task");
         const done = task.checked === 1;
         const cb = item.createEl("input", { type: "checkbox" });
         cb.checked = done;
         cb.onclick = async () => {
-          if (this.apiClient) {
-            await this.apiClient.updateTask(task.id, { checked: cb.checked ? 1 : 0 });
+          if (!this.apiClient) {
+            cb.checked = done;
+            return;
+          }
+          cb.disabled = true;
+          try {
+            if (cb.checked) await this.apiClient.completeTask(task.id);
+            else await this.apiClient.uncompleteTask(task.id);
             if (this.onTaskCheck) await this.onTaskCheck(task.id, cb.checked, task.title || "");
-            new import_obsidian4.Notice(cb.checked ? "\u2705 \u0412\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E" : "\u21A9\uFE0F \u0412\u043E\u0437\u0432\u0440\u0430\u0449\u0435\u043D\u043E");
+            new import_obsidian5.Notice(cb.checked ? "\u2705 \u0412\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E" : "\u21A9\uFE0F \u0412\u043E\u0437\u0432\u0440\u0430\u0449\u0435\u043D\u043E");
             await this.refresh();
+          } catch {
+            cb.checked = done;
+            new import_obsidian5.Notice("\u26A0\uFE0F \u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0437\u0430\u0434\u0430\u0447\u0443", 4e3);
+          } finally {
+            cb.disabled = false;
           }
         };
         item.createSpan({ text: task.title || "(\u0431\u0435\u0437 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u044F)", cls: done ? "singularity-view-task-done" : "" });
+        if (task.group && this.groupNames[task.group]) {
+          item.createSpan({ text: ` \u{1F4C2} ${this.groupNames[task.group]}`, cls: "singularity-view-task-group" });
+        }
+        if (this.timeByTask[task.id]) {
+          item.createSpan({ text: ` \u23F3 ${fmtTracked(this.timeByTask[task.id])}`, cls: "singularity-view-task-time" });
+        }
+        if (this.kanbanByTask[task.id]) {
+          item.createSpan({ text: ` \u25A6 ${this.kanbanByTask[task.id]}`, cls: "singularity-view-task-kanban" });
+        }
+        const columns = task.projectId ? this.kanbanColumns[task.projectId] ?? [] : [];
+        if (this.apiClient && columns.length > 1) {
+          const colSelect = item.createEl("select", { cls: "singularity-view-kanban-select" });
+          for (const c of columns) {
+            colSelect.createEl("option", { text: c.name, value: c.id });
+          }
+          colSelect.value = this.kanbanLinkByTask[task.id] ?? columns[0].id;
+          colSelect.onchange = async () => {
+            const target = colSelect.value;
+            colSelect.disabled = true;
+            try {
+              await this.apiClient.changeTaskColumn(task.id, target);
+              new import_obsidian5.Notice(`\u25A6 ${task.title || "\u0417\u0430\u0434\u0430\u0447\u0430"} \u2192 ${this.kanbanColumns[task.projectId].find((c) => c.id === target)?.name ?? target}`);
+              await this.refresh();
+            } catch {
+              new import_obsidian5.Notice("\u26A0\uFE0F \u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u0435\u0440\u0435\u043C\u0435\u0441\u0442\u0438\u0442\u044C \u0437\u0430\u0434\u0430\u0447\u0443", 4e3);
+              colSelect.value = this.kanbanLinkByTask[task.id] ?? colSelect.value;
+            } finally {
+              colSelect.disabled = false;
+            }
+          };
+        }
+        if (this.onTimerToggle) {
+          const running = this.activeTimerTaskId === task.id;
+          const timerBtn = item.createEl("button", {
+            text: running ? "\u23F9" : "\u25B6",
+            cls: "singularity-view-timer-btn" + (running ? " running" : ""),
+            attr: { title: running ? "\u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C \u0442\u0440\u0435\u043A\u0438\u043D\u0433" : "\u041D\u0430\u0447\u0430\u0442\u044C \u0442\u0440\u0435\u043A\u0438\u043D\u0433" }
+          });
+          timerBtn.onclick = async () => {
+            timerBtn.disabled = true;
+            try {
+              await this.onTimerToggle(task.id, task.title || "");
+            } finally {
+              timerBtn.disabled = false;
+            }
+          };
+        }
         if (task.deadline) {
           const dl = task.deadline.includes("T") ? fmtLocal(new Date(task.deadline)) : task.deadline;
           item.createSpan({ text: ` \u{1F4C5} ${dl}`, cls: "singularity-view-task-date" });
@@ -1046,9 +1630,8 @@ var SingularityTaskView = class extends import_obsidian4.ItemView {
   async loadHabitProgress() {
     if (!this.apiClient) return;
     try {
-      const data = await this.apiClient.get("/habit-progress", { maxCount: 500 });
-      const list = Array.isArray(data) ? data : data.progressRecords ?? data.progress ?? [];
-      for (const p of list) {
+      const data = await this.apiClient.getAllHabitProgress();
+      for (const p of data) {
         const hid = p.habit;
         const val = p.progress ?? 0;
         if (!this.habitsProgress[hid]) this.habitsProgress[hid] = {};
@@ -1121,7 +1704,7 @@ ${day.dow}`,
             if (cur === 2) cell.setAttr("style", `background:${color}`);
             else if (cur === 1) cell.setAttr("style", `background:${color}55`);
             else cell.setAttr("style", "");
-            new import_obsidian4.Notice(`\u274C ${e.message}`, 3e3);
+            new import_obsidian5.Notice(`\u274C ${e.message}`, 3e3);
           }
         };
       }
@@ -1130,7 +1713,7 @@ ${day.dow}`,
 };
 
 // src/ui/habits-inline.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 var DAY_MS2 = 864e5;
 var WEEKDAYS2 = ["\u0412\u0441", "\u041F\u043D", "\u0412\u0442", "\u0421\u0440", "\u0427\u0442", "\u041F\u0442", "\u0421\u0431"];
 var COLORS2 = {
@@ -1259,7 +1842,7 @@ ${day.dow}`,
           if (cur === 2) cell.setAttr("style", `background:${color}`);
           else if (cur === 1) cell.setAttr("style", `background:${color}55`);
           else cell.setAttr("style", "");
-          new import_obsidian5.Notice(`\u274C ${e.message}`, 3e3);
+          new import_obsidian6.Notice(`\u274C ${e.message}`, 3e3);
         }
       };
     }
@@ -1335,17 +1918,18 @@ function registerHabitsPostProcessor(plugin) {
 }
 
 // src/adapters/obsidian/vault-reader.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/domain/utils/date-parser.ts
+var VS2 = String.fromCharCode(65039) + "?";
 var EMOJI_DATE_PATTERNS = {
-  due: /\u{1F4C5}\s*(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?)/u,
-  scheduled: /\u23F3\s*(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?)/u,
-  start: /\u{1F6EB}\s*(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?)/u,
-  created: /\u2795\s*(\d{4}-\d{2}-\d{2})/u,
-  done: /\u2705\s*(\d{4}-\d{2}-\d{2})/u,
-  cancelled: /\u274C\s*(\d{4}-\d{2}-\d{2})/u,
-  reminder: /\u23F0\s*(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?)/u
+  due: new RegExp("\u{1F4C5}" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?)", "u"),
+  scheduled: new RegExp("\u23F3" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?)", "u"),
+  start: new RegExp("\u{1F6EB}" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?)", "u"),
+  created: new RegExp("\u2795" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}(?::\\d{2})?)?)", "u"),
+  done: new RegExp("\u2705" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}(?::\\d{2})?)?)", "u"),
+  cancelled: new RegExp("\u274C" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}(?::\\d{2})?)?)", "u"),
+  reminder: new RegExp("\u23F0" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?)", "u")
 };
 function parseEmojiDates(text) {
   const result = {
@@ -1366,14 +1950,19 @@ function parseEmojiDates(text) {
 function removeEmojiDates(text) {
   let result = text;
   for (const pattern of Object.values(EMOJI_DATE_PATTERNS)) {
-    result = result.replace(pattern, "");
+    result = result.replace(new RegExp(pattern.source, "gu"), "");
   }
   return result.replace(/\s+/g, " ").trim();
 }
+var EMOJI_DATE_RE = new RegExp(
+  "[\u{1F4C5}\u23F3\u{1F6EB}\u2795\u2705\u274C\u23F0]" + VS2 + "\\s*\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}(?::\\d{2})?)?",
+  "gu"
+);
 
 // src/domain/parser.ts
-var TASK_LINE_RE = /^\s*-\s*\[(?<status>[ x-])\]\s*(?<content>.+)$/;
-var PRIORITY_RE = /[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC]/u;
+var VS3 = String.fromCharCode(65039) + "?";
+var TASK_LINE_RE = /^\s*-\s*\[(?<status>[ xX-])\]\s*(?<content>.+)$/;
+var PRIORITY_RE = new RegExp("([\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC])" + VS3, "u");
 var PRIORITY_MAP = {
   "\u{1F53A}": "high" /* High */,
   "\u23EB": "high" /* High */,
@@ -1381,19 +1970,23 @@ var PRIORITY_MAP = {
   "\u{1F53D}": "low" /* Low */,
   "\u23EC": "lowest" /* Lowest */
 };
-var ALL_EMOJI_RE = /[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C\u23F0]/gu;
-var ALL_EMOJI_DATE_RE = /[\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C\u23F0]\s*\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?/gu;
+var PRIORITY_STRIP_RE = new RegExp("[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC]" + VS3, "gu");
+var ALL_EMOJI_RE = new RegExp("[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C\u23F0]" + VS3, "gu");
+var ALL_EMOJI_DATE_RE = new RegExp(
+  "[\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C\u23F0]" + VS3 + "\\s*\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?",
+  "gu"
+);
 var ALL_TAGS_RE = /#[a-zA-Zа-яА-ЯёЁ0-9_/-]+/g;
 function generateTaskId(filePath, _lineNumber, content) {
-  let desc = content.replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ x-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim();
+  let desc = removeDuration(content).replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ xX-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim();
   const key = `${filePath}:${desc}`;
-  return simpleHash(key);
+  return hash53(key);
 }
 function computeStableHash(_filePath, content) {
-  let desc = content.replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ x-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim().toLowerCase();
-  return simpleHash(desc);
+  let desc = removeDuration(content).replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ xX-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  return hash53(desc);
 }
-function simpleHash(str) {
+function legacySimpleHash(str) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const chr = str.charCodeAt(i);
@@ -1402,10 +1995,26 @@ function simpleHash(str) {
   }
   return Math.abs(hash).toString(16).padStart(8, "0");
 }
+function hash53(str, seed = 0) {
+  let h1 = 3735928559 ^ seed;
+  let h2 = 1103547991 ^ seed;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ h1 >>> 16, 2246822507) ^ Math.imul(h2 ^ h2 >>> 13, 3266489909);
+  h2 = Math.imul(h2 ^ h2 >>> 16, 2246822507) ^ Math.imul(h1 ^ h1 >>> 13, 3266489909);
+  return (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
+}
+function computeLegacyStableHash(_filePath, content) {
+  const desc = removeDuration(content).replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ xX-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  return legacySimpleHash(desc);
+}
 function parsePriority(text) {
   const match = text.match(PRIORITY_RE);
   if (match) {
-    return PRIORITY_MAP[match[0]] ?? null;
+    return PRIORITY_MAP[match[1]] ?? null;
   }
   return null;
 }
@@ -1418,11 +2027,13 @@ function parseTaskLine(line, filePath, lineNumber, projectName) {
   const projectTag = extractProjectTag(allTags, projectName ?? void 0);
   const dates = parseEmojiDates(content);
   const priority = parsePriority(content);
+  const durationMinutes = parseDurationMinutes(content);
   let description = removeEmojiDates(content);
-  description = description.replace(/[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC]/gu, "").trim();
+  description = description.replace(PRIORITY_STRIP_RE, "").trim();
+  description = removeDuration(description);
   description = description.replace(/#[a-zA-Zа-яА-ЯёЁ0-9_/-]+/g, "").trim();
   const statusChar = m.groups.status;
-  const status = statusChar === "-" ? "cancelled" /* Cancelled */ : statusChar === "x" ? "done" /* Done */ : "todo" /* Todo */;
+  const status = statusChar === "-" ? "cancelled" /* Cancelled */ : statusChar.toLowerCase() === "x" ? "done" /* Done */ : "todo" /* Todo */;
   const taskId = generateTaskId(filePath, lineNumber, content);
   const stableHash = computeStableHash(filePath, content);
   const syncContent = [
@@ -1436,10 +2047,11 @@ function parseTaskLine(line, filePath, lineNumber, projectName) {
     dates.done ?? "",
     dates.cancelled ?? "",
     dates.reminder ?? "",
+    durationMinutes?.toString() ?? "",
     [...allTags].sort().join(","),
     projectTag ?? ""
   ].join("|");
-  const syncHash = simpleHash(syncContent);
+  const syncHash = hash53(syncContent);
   return {
     id: taskId,
     description,
@@ -1456,10 +2068,62 @@ function parseTaskLine(line, filePath, lineNumber, projectName) {
     cancelledDate: dates.cancelled,
     reminderDate: dates.reminder,
     priority,
+    durationMinutes,
     lastSyncedAt: null,
     syncHash,
     stableHash
   };
+}
+
+// src/domain/checklist.ts
+var ANCHOR_RE = /%%\s*chk:([A-Za-z0-9-]+)\s*%%/;
+var BOX_RE = /^\s*-\s*\[([ xX])\]\s*(.+)$/;
+function parseChecklistLine(line) {
+  const box = line.match(BOX_RE);
+  if (!box) return null;
+  const anchor = box[2].match(ANCHOR_RE);
+  if (!anchor) return null;
+  const title = box[2].replace(ANCHOR_RE, "").replace(/\s+/g, " ").trim();
+  return {
+    checked: box[1].toLowerCase() === "x",
+    title,
+    anchorId: anchor[1],
+    raw: line
+  };
+}
+function formatChecklistLine(title, done, anchorId) {
+  return `- [${done ? "x" : " "}] ${title} %% chk:${anchorId} %%`;
+}
+function splitNotesSection(lines) {
+  const items = [];
+  const noteLines = [];
+  for (const line of lines) {
+    const parsed = parseChecklistLine(line);
+    if (parsed) items.push(parsed);
+    else noteLines.push(line);
+  }
+  return { items, noteLines };
+}
+function mergeChecklist(existing, sgItems, dropMissing) {
+  const sgById = new Map(sgItems.map((it) => [it.id, it]));
+  const seen = /* @__PURE__ */ new Set();
+  const lines = [];
+  for (const ex of existing) {
+    const sg = sgById.get(ex.anchorId);
+    if (!sg) {
+      if (!dropMissing) lines.push(ex.raw);
+      continue;
+    }
+    seen.add(ex.anchorId);
+    const title = sg.title ?? ex.title;
+    if (sg.done === ex.checked && title === ex.title) lines.push(ex.raw);
+    else lines.push(formatChecklistLine(title, sg.done, ex.anchorId));
+  }
+  const appended = [];
+  for (const sg of sgItems) {
+    if (!seen.has(sg.id)) appended.push(formatChecklistLine(sg.title, sg.done, sg.id));
+  }
+  return { lines, appended };
 }
 
 // src/adapters/obsidian/vault-reader.ts
@@ -1477,7 +2141,7 @@ var ObsidianVaultReader = class {
   async readTasksFile(tasksFile) {
     const relPath = tasksFile.replace(/^\/+/, "");
     const file = this.vault.getAbstractFileByPath(relPath);
-    if (!file || !(file instanceof import_obsidian6.TFile)) return [];
+    if (!file || !(file instanceof import_obsidian7.TFile)) return [];
     const content = await this.vault.read(file);
     const lines = content.split("\n");
     const tasks = [];
@@ -1494,7 +2158,7 @@ var ObsidianVaultReader = class {
     const marker = this.tasksSectionMarker;
     const tasks = [];
     for (const child of folder.children) {
-      if (child instanceof import_obsidian6.TFile && child.extension === "md") {
+      if (child instanceof import_obsidian7.TFile && child.extension === "md") {
         const relativePath = `${projectsFolder}/${child.name}`;
         const projectName = child.name.replace(/\.md$/, "");
         const content = await this.vault.read(child);
@@ -1526,10 +2190,42 @@ var ObsidianVaultReader = class {
   async getFileMtime(filePath) {
     const relPath = filePath.replace(/^\/+/, "");
     const file = this.vault.getAbstractFileByPath(relPath);
-    if (file instanceof import_obsidian6.TFile) {
+    if (file instanceof import_obsidian7.TFile) {
       return new Date(file.stat.mtime).toISOString();
     }
     return null;
+  }
+  /**
+   * Read anchored checklist lines (`- [ ] title %% chk:ID %%`) from the notes
+   * sections of all project files. Unanchored boxes are ignored — without an
+   * anchor (and with the parent task unknown) forward sync cannot map them.
+   */
+  async readChecklistAnchors(projectsFolder, notesSectionMarker) {
+    const anchored = [];
+    let unanchoredCount = 0;
+    const relPath = projectsFolder.replace(/^\/+/, "");
+    const folder = this.vault.getAbstractFileByPath(relPath);
+    if (!folder || !("children" in folder)) return { anchored, unanchoredCount };
+    for (const child of folder.children) {
+      if (!(child instanceof import_obsidian7.TFile) || child.extension !== "md") continue;
+      const relativePath = `${projectsFolder}/${child.name}`;
+      const content = await this.vault.read(child);
+      const lines = content.split("\n");
+      const markerIdx = lines.findIndex((l) => l.trim() === notesSectionMarker);
+      if (markerIdx === -1) continue;
+      for (let i = markerIdx + 1; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
+        if (trimmed.startsWith("#") && trimmed !== notesSectionMarker) break;
+        if (!/^\s*-\s*\[[ xX]\]/.test(lines[i])) continue;
+        const parsed = parseChecklistLine(lines[i]);
+        if (parsed) {
+          anchored.push({ ...parsed, filePath: relativePath, lineNumber: i + 1 });
+        } else {
+          unanchoredCount++;
+        }
+      }
+    }
+    return { anchored, unanchoredCount };
   }
   async getProjectFilesMap(projectsFolder) {
     const map = /* @__PURE__ */ new Map();
@@ -1537,7 +2233,7 @@ var ObsidianVaultReader = class {
     const folder = this.vault.getAbstractFileByPath(relPath);
     if (!folder || !("children" in folder)) return map;
     for (const child of folder.children) {
-      if (child instanceof import_obsidian6.TFile && child.extension === "md") {
+      if (child instanceof import_obsidian7.TFile && child.extension === "md") {
         const name = child.name.replace(/\.md$/, "");
         const content = await this.vault.read(child);
         const sgId = parseFrontmatterId(content);
@@ -1549,7 +2245,7 @@ var ObsidianVaultReader = class {
 };
 
 // src/adapters/obsidian/vault-writer.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 var EMOJI_PRIORITY = {
   highest: "\u{1F53A}",
   high: "\u{1F53A}",
@@ -1605,6 +2301,9 @@ function formatTaskLine(task) {
   if (task.dueDate) {
     emojis.push(`\u{1F4C5} ${formatDateForObsidian(task.dueDate).split(" ")[0]}`);
   }
+  if (task.durationMinutes != null) {
+    emojis.push(formatDuration(task.durationMinutes));
+  }
   if (task.doneDate) {
     emojis.push(`\u2705 ${task.doneDate.split("T")[0]}`);
   }
@@ -1626,7 +2325,7 @@ var ObsidianVaultWriter = class {
   async ensureFile(path) {
     const relPath = path.replace(/^\/+/, "");
     let file = this.vault.getAbstractFileByPath(relPath);
-    if (file instanceof import_obsidian7.TFile) return file;
+    if (file instanceof import_obsidian8.TFile) return file;
     const dir = relPath.substring(0, relPath.lastIndexOf("/"));
     await this.vault.createFolder(dir).catch(() => {
     });
@@ -1736,13 +2435,16 @@ ${taskLines.join("\n")}
       tags: sgTask.tags,
       projectTag: sgTask.projectTag,
       dueDate: sgTask.dueDate ?? existing.dueDate,
-      // Preserve Obsidian-only emoji dates from existing line
-      scheduledDate: existing.scheduledDate,
-      startDate: existing.startDate,
-      createdDate: existing.createdDate,
+      // SG is the source of truth for start/scheduled/reminder: forward sync
+      // runs before reverse, so SG already contains Obsidian edits. A null SG
+      // value means "no date in SG" — keep the Obsidian line untouched.
+      scheduledDate: sgTask.scheduledDate ?? existing.scheduledDate,
+      startDate: sgTask.startDate ?? existing.startDate,
+      createdDate: existing.createdDate ?? sgTask.createdDate,
       doneDate: existing.doneDate || sgTask.doneDate,
       cancelledDate: existing.cancelledDate || sgTask.cancelledDate,
-      reminderDate: existing.reminderDate,
+      reminderDate: sgTask.reminderDate ?? existing.reminderDate,
+      durationMinutes: sgTask.durationMinutes ?? existing.durationMinutes,
       priority: sgTask.priority,
       lastSyncedAt: sgTask.lastSyncedAt,
       syncHash: sgTask.syncHash,
@@ -1752,7 +2454,7 @@ ${taskLines.join("\n")}
   async hasTasksSection(filePath) {
     const relPath = filePath.replace(/^\/+/, "");
     const file = this.vault.getAbstractFileByPath(relPath);
-    if (!(file instanceof import_obsidian7.TFile)) return false;
+    if (!(file instanceof import_obsidian8.TFile)) return false;
     const content = await this.vault.read(file);
     return content.split("\n").some((l) => l.trim() === this.tasksSectionMarker);
   }
@@ -1784,7 +2486,7 @@ ${content}`;
     for (const [filePath, fileTasks] of byFile) {
       const relPath = filePath.replace(/^\/+/, "");
       const file = this.vault.getAbstractFileByPath(relPath);
-      if (!(file instanceof import_obsidian7.TFile)) continue;
+      if (!(file instanceof import_obsidian8.TFile)) continue;
       const content = await this.vault.read(file);
       const lines = content.split("\n");
       let changed = false;
@@ -1828,6 +2530,26 @@ var TaskStore = class {
   }
   getBySingularityId(sgId) {
     return this.data.find((r) => r.singularityTaskId === sgId);
+  }
+  /** Find a linked record by stable content hash across ALL files.
+   * Used to detect cross-file moves: the Obsidian id embeds filePath, so a
+   * moved task gets a new id while stableHash stays the same. */
+  getByStableHash(stableHash) {
+    if (!stableHash) return void 0;
+    return this.data.find((r) => r.obsidianStableHash === stableHash && r.singularityTaskId);
+  }
+  /** Remove stale records pointing at the same SG task as the kept record,
+   * but only when their Obsidian id is no longer present (moved/renamed).
+   * Prevents refCount inflation and ghost links after moves. */
+  async deleteStaleSiblings(keepObsidianId, singularityId, currentIds) {
+    let removed = 0;
+    for (const r of [...this.data]) {
+      if (r.id !== keepObsidianId && r.singularityTaskId === singularityId && !currentIds.has(r.id)) {
+        await this.deleteById(r.id);
+        removed++;
+      }
+    }
+    return removed;
   }
   getSynced() {
     return this.data.filter((r) => r.syncStatus === "synced");
@@ -1940,13 +2662,24 @@ var ConflictResolutionError = class extends Error {
 };
 function parseSgDate(value) {
   if (value == null) return null;
-  const d = new Date(String(value));
-  if (!isNaN(d.getTime())) return d;
-  const num = Number(value);
-  if (!isNaN(num)) {
-    return new Date(num > 1e12 ? num : num * 1e3);
+  if (value instanceof Date) return isNaN(value.getTime()) ? null : value;
+  if (typeof value === "number") {
+    if (!isFinite(value)) return null;
+    if (value >= 1e12) return new Date(value);
+    if (value >= 1e9) return new Date(value * 1e3);
+    return null;
   }
-  return null;
+  if (typeof value !== "string") return null;
+  const s = value.trim();
+  if (!s) return null;
+  if (/^\d+$/.test(s)) {
+    if (s.length === 10) return new Date(Number(s) * 1e3);
+    if (s.length === 13) return new Date(Number(s));
+    return null;
+  }
+  if (!/[-/T:]/.test(s)) return null;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
 }
 function sgDateToIso(value) {
   const d = parseSgDate(value);
@@ -2000,8 +2733,10 @@ async function resolveManual(obsidianTask, singularityTask, dbState, promptFn) {
   );
   switch (choice) {
     case "obsidian":
+    case "obsidian_all":
       return obsidianTask;
     case "singularity":
+    case "singularity_all":
       return null;
     case "new":
     case "skip":
@@ -2012,8 +2747,16 @@ async function resolveManual(obsidianTask, singularityTask, dbState, promptFn) {
   }
 }
 
+// src/domain/sync-errors.ts
+var SyncAbortError = class extends Error {
+  constructor(message, cause) {
+    super(message);
+    this.cause = cause;
+    this.name = "SyncAbortError";
+  }
+};
+
 // src/orchestrators/forward-sync.ts
-var import_obsidian8 = require("obsidian");
 function extractNotifyFromTask(task) {
   const fromTags = extractNotifyMinutes(
     task.tags.filter((t) => /^notify/i.test(t)).map((t) => `#${t}`).join(" ")
@@ -2050,6 +2793,20 @@ var ForwardSyncOrchestrator = class {
     this._createdIds = /* @__PURE__ */ new Set();
     this._failedIds = /* @__PURE__ */ new Set();
     this._archivedIds = /* @__PURE__ */ new Set();
+    this._currentIds = /* @__PURE__ */ new Set();
+    /** Sync-run correlation tag, e.g. "sync:ab12cd ". Empty outside runs. */
+    this.runTag = "";
+    /**
+     * Batched creates: syncTask enqueues instead of calling the API, flush
+     * sends one /batch. Pending entries are visible to title-match scans so
+     * same-run duplicates merge instead of doubling. Flush happens at the end
+     * of the loop and before any Manual prompt (the prompt needs the SG record).
+     */
+    this.pendingCreates = [];
+  }
+  /** Set by the orchestrator per run so logs correlate across modules. */
+  setRunTag(tag) {
+    this.runTag = tag;
   }
   getVaultReader() {
     return this.vaultReader;
@@ -2069,7 +2826,7 @@ var ForwardSyncOrchestrator = class {
   getArchivedObsidianIds() {
     return new Set(this._archivedIds);
   }
-  async sync(tasksFile, projectsFolder) {
+  async sync(tasksFile, projectsFolder, notesSectionMarker) {
     const stats = {
       obsidianTasks: 0,
       singularityTasks: 0,
@@ -2084,6 +2841,7 @@ var ForwardSyncOrchestrator = class {
     const obsidianTasks = await this.vaultReader.readAllTasks(tasksFile, projectsFolder);
     stats.obsidianTasks = obsidianTasks.length;
     const currentIds = new Set(obsidianTasks.map((t) => t.id));
+    this._currentIds = currentIds;
     const currentStableHashes = new Set(obsidianTasks.map((t) => t.stableHash).filter(Boolean));
     await this.loadProjects();
     await this.loadSingularityTasks();
@@ -2100,30 +2858,94 @@ var ForwardSyncOrchestrator = class {
       } catch (e) {
         stats.errors++;
         this._failedIds.add(task.id);
-        console.error(`[ForwardSync] task error:`, e?.message || e, `task:`, task.description);
+        console.error(`[${this.runTag}ForwardSync] task error:`, e?.message || e, `task:`, task.description);
       }
+    }
+    const failedCreates = await this.flushPendingCreates();
+    stats.created = Math.max(0, stats.created - failedCreates);
+    stats.errors += failedCreates;
+    if (notesSectionMarker) {
+      await this.syncChecklists(projectsFolder, notesSectionMarker, stats);
     }
     return stats;
   }
   normalizeForComparison(text) {
     if (!text) return "";
-    return text.trim().toLowerCase().replace(/\s+/g, " ").replace(/<[^>]+>/g, "").replace(/[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC}]/gu, "").replace(/[\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C]\s*\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?/gu, "").replace(/#[a-zA-Zа-яА-ЯёЁ0-9_/-]+/g, "");
+    return text.trim().toLowerCase().replace(/\s+/g, " ").replace(/<[^>]+>/g, "").replace(/[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC]/gu, "").replace(/[\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C]\s*\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?/gu, "").replace(/#[a-zA-Zа-яА-ЯёЁ0-9_/-]+/g, "");
+  }
+  /** Drop stale TaskStore records that point at the same SG task but whose
+  * Obsidian id is gone (task moved between files and got a new id).
+  * Skipped in dryRun — store must not be mutated there. */
+  async cleanupMoveStaleRecords(task, sgId) {
+    if (this.dryRun || !sgId) return;
+    await this.taskStore.deleteStaleSiblings(task.id, sgId, this._currentIds);
+  }
+  /**
+   * Forward checklist sync: anchored boxes in notes sections → SG.
+   * Toggle → check/uncheck, retitle → PATCH, anchor without SG item → DELETE
+   * (forward always runs on the full list, so absence means deleted).
+   * Unanchored boxes are ignored (parent task unknowable) with a log line.
+   * Checklist failures are per-item and never abort the task sync.
+   */
+  async syncChecklists(projectsFolder, notesSectionMarker, stats) {
+    if (this.dryRun) return;
+    const { anchored, unanchoredCount } = await this.vaultReader.readChecklistAnchors(
+      projectsFolder,
+      notesSectionMarker
+    );
+    if (unanchoredCount > 0) {
+      console.log(`[ForwardSync] ${unanchoredCount} unanchored checklist box(es) ignored (no anchor \u2192 parent task unknown)`);
+    }
+    if (anchored.length === 0) return;
+    let sgItems;
+    try {
+      sgItems = await this.apiClient.getChecklistItems();
+    } catch (e) {
+      stats.errors++;
+      console.error(`[ForwardSync] checklist fetch failed:`, e?.message ?? e);
+      return;
+    }
+    const sgById = new Map(sgItems.filter((i) => !i.removed).map((i) => [i.id, i]));
+    for (const line of anchored) {
+      try {
+        const sg = sgById.get(line.anchorId);
+        if (!sg) {
+          await this.apiClient.deleteChecklistItem(line.anchorId);
+          stats.updated++;
+          continue;
+        }
+        if (!!sg.done !== line.checked) {
+          if (line.checked) await this.apiClient.checkChecklistItem(line.anchorId);
+          else await this.apiClient.uncheckChecklistItem(line.anchorId);
+          stats.updated++;
+        } else if ((sg.title ?? "") !== line.title) {
+          await this.apiClient.updateChecklistItem(line.anchorId, { title: line.title });
+          stats.updated++;
+        }
+      } catch (e) {
+        stats.errors++;
+        console.error(`[ForwardSync] checklist item error:`, e?.message ?? e, `anchor:`, line.anchorId);
+      }
+    }
   }
   async syncTask(task) {
     if (task.status === "cancelled" /* Cancelled */) {
       for (const sgExisting of this._sgTasksCache) {
         if (sgExisting.externalId === task.id) {
+          if (sgExisting.isNote) return "skipped";
           return this.updateExisting(task, sgExisting);
         }
       }
       const taskDescNorm2 = this.normalizeForComparison(task.description);
+      if (this.matchPendingCreate(taskDescNorm2)) await this.flushPendingCreates();
       for (const sgExisting of this._sgTasksCache) {
+        if (sgExisting.isNote) continue;
         const sgTitleNorm = this.normalizeForComparison(sgExisting.title ?? "");
         if (taskDescNorm2 && sgTitleNorm && taskDescNorm2 === sgTitleNorm) {
           return this.updateExisting(task, sgExisting);
         }
       }
-      return this.createNewTask(task);
+      return this.enqueueCreate(task);
     }
     if (task.status === "done" /* Done */) {
       if (task.cancelledDate) {
@@ -2135,14 +2957,15 @@ var ForwardSyncOrchestrator = class {
           return this.updateExisting(task, sgTask, 2);
         }
         const taskDescNorm2 = this.normalizeForComparison(task.description);
+        if (this.matchPendingCreate(taskDescNorm2)) await this.flushPendingCreates();
         for (const sgExisting of this._sgTasksCache) {
-          if (sgExisting.checked === 2) continue;
+          if (sgExisting.checked === 2 || sgExisting.isNote) continue;
           const sgTitleNorm = this.normalizeForComparison(sgExisting.title ?? "");
           if (taskDescNorm2 && sgTitleNorm && taskDescNorm2 === sgTitleNorm) {
             return this.updateExisting(task, sgExisting, 2);
           }
         }
-        return this.createNewTask(task, 2);
+        return this.enqueueCreate(task, 2);
       }
       const state = this.taskStore.getByObsidianId(task.id);
       if (state?.singularityTaskId) {
@@ -2153,8 +2976,9 @@ var ForwardSyncOrchestrator = class {
       }
       if (!state?.singularityTaskId) {
         const taskDescNorm2 = this.normalizeForComparison(task.description);
+        if (this.matchPendingCreate(taskDescNorm2)) await this.flushPendingCreates();
         for (const sgExisting of this._sgTasksCache) {
-          if (sgExisting.checked === 2) continue;
+          if (sgExisting.checked === 2 || sgExisting.isNote) continue;
           const sgTitleNorm = this.normalizeForComparison(sgExisting.title ?? "");
           if (taskDescNorm2 && sgTitleNorm && taskDescNorm2 === sgTitleNorm) {
             return this.updateExisting(task, sgExisting);
@@ -2165,6 +2989,7 @@ var ForwardSyncOrchestrator = class {
     }
     for (const sgExisting of this._sgTasksCache) {
       if (sgExisting.externalId === task.id) {
+        if (sgExisting.isNote) return "skipped";
         const state = this.taskStore.getByObsidianId(task.id);
         if (sgExisting.journalDate && state?.obsidianContentHash === task.syncHash) {
           return "skipped";
@@ -2173,22 +2998,31 @@ var ForwardSyncOrchestrator = class {
       }
     }
     if (task.stableHash) {
-      const stateByHash = this.taskStore.getAll().find(
-        (s) => s.obsidianFilePath === task.filePath && s.obsidianStableHash === task.stableHash
-      );
+      const allStates = this.taskStore.getAll();
+      const legacyStable = computeLegacyStableHash(task.filePath, `#todo ${task.description}`);
+      const stateByHash = allStates.find(
+        (s) => s.obsidianFilePath === task.filePath && s.obsidianStableHash === task.stableHash && s.singularityTaskId
+      ) ?? allStates.find(
+        (s) => s.obsidianFilePath === task.filePath && s.obsidianStableHash === legacyStable && s.singularityTaskId
+      ) ?? this.taskStore.getByStableHash(task.stableHash) ?? this.taskStore.getByStableHash(legacyStable);
       if (stateByHash?.singularityTaskId) {
         const sgTask = await this.apiClient.getTaskById(stateByHash.singularityTaskId);
         if (sgTask && !sgTask.removed) {
           if (sgTask.externalId !== task.id) {
-            await this.apiClient.updateTask(sgTask.id, { externalId: task.id });
+            if (!this.dryRun) await this.apiClient.updateTask(sgTask.id, { externalId: task.id });
+            sgTask.externalId = task.id;
           }
-          return this.updateExisting(task, sgTask);
+          const result = await this.updateExisting(task, sgTask);
+          await this.cleanupMoveStaleRecords(task, sgTask.id);
+          return result;
         }
       }
     }
     const taskDescNorm = this.normalizeForComparison(task.description);
+    if (this.matchPendingCreate(taskDescNorm)) await this.flushPendingCreates();
     let matchedCancelled = null;
     for (const sgExisting of this._sgTasksCache) {
+      if (sgExisting.isNote) continue;
       const sgTitle = sgExisting.title ?? "";
       const sgTitleNorm = this.normalizeForComparison(sgTitle);
       if (!taskDescNorm || !sgTitleNorm) continue;
@@ -2198,12 +3032,14 @@ var ForwardSyncOrchestrator = class {
           continue;
         }
         const decision = await this.resolveTitleMatch(task, sgExisting);
-        if (decision === "new") return this.createNewTask(task);
-        return this.updateExisting(task, sgExisting);
+        if (decision === "new") return this.enqueueCreate(task);
+        const merged = await this.updateExisting(task, sgExisting);
+        await this.cleanupMoveStaleRecords(task, sgExisting.id);
+        return merged;
       }
     }
     if (matchedCancelled) return this.updateExisting(task, matchedCancelled, 0);
-    return this.createNewTask(task);
+    return this.enqueueCreate(task);
   }
   /**
    * Title-match (ПРОВЕРКА 2): при strategy=manual спрашиваем пользователя,
@@ -2293,7 +3129,7 @@ var ForwardSyncOrchestrator = class {
         }
       } catch (e) {
         if (e instanceof ConflictResolutionError) {
-          new import_obsidian8.Notice(`\u26A0\uFE0F ${e.message}`);
+          notifyThrottled(`\u26A0\uFE0F ${e.message}`);
           return "skipped";
         }
         throw e;
@@ -2314,12 +3150,14 @@ var ForwardSyncOrchestrator = class {
       notifies: notifies.length ? notifies : void 0,
       tags: tags.length ? tags : void 0,
       projectId,
-      externalId: task.id
+      externalId: task.id,
+      timeLength: task.durationMinutes ?? void 0
     });
     sgExisting.title = task.description;
     sgExisting.checked = checked;
     sgExisting.externalId = task.id;
     sgExisting.tags = tags;
+    if (task.durationMinutes != null) sgExisting.timeLength = task.durationMinutes;
     if (updatedTask?.modificatedDate) sgExisting.modificatedDate = updatedTask.modificatedDate;
     const sgModDate = updatedTask?.modificatedDate ?? sgExisting.modificatedDate;
     const mtime = await this.getFileMtime(task.filePath);
@@ -2344,12 +3182,19 @@ var ForwardSyncOrchestrator = class {
   }
   async createNewTask(task, overrideChecked) {
     if (this.dryRun) return "created";
+    const body = await this.buildCreateBody(task, overrideChecked);
+    const data = await this.apiClient.createTask(body);
+    await this.registerCreated(task, data);
+    return "created";
+  }
+  /** Resolve everything a create needs (projects/tags may create SG entities). */
+  async buildCreateBody(task, overrideChecked) {
     const projectId = await this.resolveProjectId(task);
     const notifies = extractNotifyFromTask(task);
     const { start, useTime } = resolveStartDate(task);
     const tags = await this.resolveTags(task);
     const checked = overrideChecked ?? (task.status === "cancelled" /* Cancelled */ ? 2 : task.status === "done" /* Done */ ? 1 : 0);
-    const data = await this.apiClient.createTask({
+    return {
       id: null,
       title: task.description,
       note: null,
@@ -2367,32 +3212,74 @@ var ForwardSyncOrchestrator = class {
       useTime,
       notifies: notifies.length ? notifies : [],
       alarmNotify: false,
-      notify: 1
-    });
+      notify: 1,
+      timeLength: task.durationMinutes
+    };
+  }
+  async registerCreated(task, data) {
     const sgId = data.id;
-    if (sgId) {
-      this._createdIds.add(task.id);
-      if (data) this._sgTasksCache.push(data);
-      const mtime = await this.getFileMtime(task.filePath);
-      await this.taskStore.upsert({
-        id: task.id,
-        obsidianFilePath: task.filePath,
-        obsidianLineNumber: task.lineNumber,
-        obsidianContentHash: task.syncHash ?? task.id,
-        obsidianDescription: task.description,
-        obsidianStableHash: task.stableHash,
-        singularityTaskId: sgId,
-        singularityEtag: null,
-        lastSyncedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        lastModifiedObsidian: mtime,
-        lastModifiedSingularity: sgDateToIso(data.modificatedDate) ?? (/* @__PURE__ */ new Date()).toISOString(),
-        syncStatus: "synced",
-        errorMessage: null,
-        createdAt: null,
-        updatedAt: null
-      });
-    }
+    if (!sgId) return;
+    this._createdIds.add(task.id);
+    this._sgTasksCache.push(data);
+    const mtime = await this.getFileMtime(task.filePath);
+    await this.taskStore.upsert({
+      id: task.id,
+      obsidianFilePath: task.filePath,
+      obsidianLineNumber: task.lineNumber,
+      obsidianContentHash: task.syncHash ?? task.id,
+      obsidianDescription: task.description,
+      obsidianStableHash: task.stableHash,
+      singularityTaskId: sgId,
+      singularityEtag: null,
+      lastSyncedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      lastModifiedObsidian: mtime,
+      lastModifiedSingularity: sgDateToIso(data.modificatedDate) ?? (/* @__PURE__ */ new Date()).toISOString(),
+      syncStatus: "synced",
+      errorMessage: null,
+      createdAt: null,
+      updatedAt: null
+    });
+  }
+  async enqueueCreate(task, overrideChecked) {
+    if (this.dryRun) return "created";
+    const body = await this.buildCreateBody(task, overrideChecked);
+    this.pendingCreates.push({ task, overrideChecked, body, normDesc: this.normalizeForComparison(task.description) });
     return "created";
+  }
+  matchPendingCreate(normDesc) {
+    if (!normDesc) return null;
+    return this.pendingCreates.find((p) => p.normDesc === normDesc) ?? null;
+  }
+  /** Flush the create queue; returns the number of failed creates (for stats fix-up). */
+  async flushPendingCreates() {
+    if (this.pendingCreates.length === 0 || this.dryRun) {
+      this.pendingCreates = [];
+      return 0;
+    }
+    const batch = this.pendingCreates.splice(0);
+    if (batch.length === 1) {
+      try {
+        const data = await this.apiClient.createTask(batch[0].body);
+        await this.registerCreated(batch[0].task, data);
+        return 0;
+      } catch (e) {
+        this._failedIds.add(batch[0].task.id);
+        console.error(`[ForwardSync] create error:`, e?.message ?? e, `task:`, batch[0].task.description);
+        return 1;
+      }
+    }
+    const results = await this.apiClient.createTasksBatch(batch.map((p) => p.body));
+    let failed = 0;
+    for (let i = 0; i < batch.length; i++) {
+      const data = results[i];
+      if (data?.id) await this.registerCreated(batch[i].task, data);
+      else {
+        failed++;
+        this._failedIds.add(batch[i].task.id);
+        console.error(`[ForwardSync] batched create failed for task:`, batch[i].task.description);
+      }
+    }
+    return failed;
   }
   async archiveCompletedTask(task) {
     if (this.dryRun) return "archived";
@@ -2411,7 +3298,8 @@ var ForwardSyncOrchestrator = class {
         useTime,
         notifies: notifies.length ? notifies : void 0,
         tags: tags.length ? tags : void 0,
-        projectId
+        projectId,
+        timeLength: task.durationMinutes ?? void 0
       });
       await this.apiClient.archiveTask(state.singularityTaskId);
       const mtime = await this.getFileMtime(task.filePath);
@@ -2454,7 +3342,8 @@ var ForwardSyncOrchestrator = class {
       useTime,
       notifies: notifies.length ? notifies : [],
       alarmNotify: false,
-      notify: 1
+      notify: 1,
+      timeLength: task.durationMinutes
     });
     const sgId = data.id;
     if (sgId) {
@@ -2495,15 +3384,15 @@ var ForwardSyncOrchestrator = class {
         const title = (p.title ?? "").toLowerCase();
         if (title) this._projectsCache[title] = p;
       }
-    } catch {
-      this._projectsCache = {};
+    } catch (e) {
+      throw new SyncAbortError(`\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043F\u0440\u043E\u0435\u043A\u0442\u044B Singularity: ${e?.message ?? e}`, e);
     }
   }
   async loadSingularityTasks() {
     try {
       this._sgTasksCache = await this.apiClient.getTasks(false, true);
-    } catch {
-      this._sgTasksCache = [];
+    } catch (e) {
+      throw new SyncAbortError(`\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u0437\u0430\u0434\u0430\u0447\u0438 Singularity: ${e?.message ?? e}`, e);
     }
   }
   /** Returns Obsidian IDs of tasks that were deleted, for reverse sync to ignore */
@@ -2515,30 +3404,71 @@ var ForwardSyncOrchestrator = class {
     for (const s of allWithSgId) {
       sgRefCount.set(s.singularityTaskId, (sgRefCount.get(s.singularityTaskId) ?? 0) + 1);
     }
+    const pendingDeletes = [];
     for (const state of synced) {
       if (!currentIds.has(state.id) && !(currentStableHashes?.has(state.obsidianStableHash ?? "") ?? false)) {
         deletedIds.add(state.id);
         const sgId = state.singularityTaskId;
         if (sgId && !this.dryRun) {
           const refCount = sgRefCount.get(sgId) ?? 1;
-          if (refCount <= 1) {
-            try {
-              await this.apiClient.softDeleteTask(sgId);
-            } catch (e1) {
-              console.warn(`[ForwardSync] softDeleteTask failed for ${sgId} (task: "${state.obsidianDescription}"): ${e1?.message ?? e1}`);
-              try {
-                await this.apiClient.deleteTask(sgId);
-                console.log(`[ForwardSync] fallback: permanently deleted ${sgId}`);
-              } catch (e2) {
-                console.error(`[ForwardSync] deleteTask also failed for ${sgId}: ${e2?.message ?? e2}`);
-              }
-            }
-          }
+          if (refCount <= 1) pendingDeletes.push({ sgId, description: state.obsidianDescription });
         }
         await this.taskStore.deleteById(state.id);
       }
     }
+    await this.batchSoftDelete(pendingDeletes);
     return deletedIds;
+  }
+  async batchSoftDelete(pending) {
+    if (pending.length === 0) return;
+    if (pending.length === 1) {
+      await this.softDeleteOne(pending[0].sgId, pending[0].description);
+      return;
+    }
+    try {
+      const { results } = await this.apiClient.executeBatch(
+        pending.map((p) => ({
+          method: "PATCH",
+          path: `/v2/task/${p.sgId}`,
+          body: { deleteDate: this.batchDeleteDate() },
+          uuid: p.sgId
+        }))
+      );
+      const failed = /* @__PURE__ */ new Map();
+      for (let i = 0; i < results.length; i++) {
+        const status = results[i]?.status ?? 0;
+        if (status < 200 || status >= 300) failed.set(pending[i].sgId, status);
+      }
+      for (const p of pending) {
+        if (failed.has(p.sgId)) await this.softDeleteOne(p.sgId, p.description);
+      }
+      if (failed.size > 0) {
+        console.warn(`[ForwardSync] batch soft-delete: ${failed.size}/${pending.length} fell back to individual calls`);
+      }
+    } catch (e) {
+      console.warn(`[ForwardSync] batch soft-delete failed, falling back to individual calls:`, e?.message ?? e);
+      for (const p of pending) await this.softDeleteOne(p.sgId, p.description);
+    }
+  }
+  batchDeleteDate() {
+    const now = /* @__PURE__ */ new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}T00:00:00${localOffsetString()}`;
+  }
+  async softDeleteOne(sgId, description) {
+    try {
+      await this.apiClient.softDeleteTask(sgId);
+    } catch (e1) {
+      console.warn(`[ForwardSync] softDeleteTask failed for ${sgId} (task: "${description}"): ${e1?.message ?? e1}`);
+      try {
+        await this.apiClient.deleteTask(sgId);
+        console.log(`[ForwardSync] fallback: permanently deleted ${sgId}`);
+      } catch (e2) {
+        console.error(`[ForwardSync] deleteTask also failed for ${sgId}: ${e2?.message ?? e2}`);
+      }
+    }
   }
   findProjectByTag(tag) {
     return this._projectsCache[tag.toLowerCase()]?.id ?? null;
@@ -2657,10 +3587,6 @@ function renderLines(lines) {
   while (i < lines.length) {
     const line = lines[i];
     if (line.blockAttrs["code-block"]) {
-      if (inCodeBlock) {
-        result.push("```");
-        inCodeBlock = false;
-      }
       if (!inCodeBlock) {
         result.push("```");
         inCodeBlock = true;
@@ -2676,12 +3602,8 @@ function renderLines(lines) {
     if (line.blockAttrs.table) {
       const tableRows = [];
       while (i < lines.length && lines[i].blockAttrs.table) {
-        const row = [];
-        while (i < lines.length && lines[i].blockAttrs.table) {
-          row.push(lines[i].content);
-          i++;
-        }
-        tableRows.push(row);
+        tableRows.push(lines[i].content.split("	"));
+        i++;
       }
       if (tableRows.length > 0) {
         const maxCols = Math.max(...tableRows.map((r) => r.length));
@@ -2730,11 +3652,18 @@ function deltaToMarkdown(ops) {
   return renderLines(rawLines).join("\n");
 }
 
+// src/domain/utils/project-name.ts
+var ILLEGAL_RE = /[/\\:*?"<>|]/g;
+function sanitizeProjectName(title) {
+  const clean = (title ?? "").replace(ILLEGAL_RE, "_").replace(/\s+/g, " ").trim().replace(/\.+$/g, "").slice(0, 100).trim();
+  return clean || "Untitled";
+}
+
 // src/orchestrators/reverse-sync.ts
 function isNoteId(value) {
   return /^N(?:-[A-Za-z0-9]+)+$/.test(value.trim());
 }
-function simpleHash2(s) {
+function simpleHash(s) {
   if (!s) return "";
   let hash = 5381;
   for (let i = 0; i < s.length; i++) {
@@ -2757,7 +3686,7 @@ function extractNoteText(note) {
   return String(note);
 }
 var ReverseSyncOrchestrator = class {
-  constructor(apiClient, taskStore, obsidianTasksFile, vault, vaultWriter, excludeTags = [], dryRun = false, projectsFolder = "/project", projectTemplate = "", lastKnownProjectFiles = {}, notesSectionMarker = "#### \u{1F4DD} Notes", lastKnownNoteHashes = {}) {
+  constructor(apiClient, taskStore, obsidianTasksFile, vault, vaultWriter, excludeTags = [], dryRun = false, projectsFolder = "/project", projectTemplate = "", lastKnownProjectFiles = {}, notesSectionMarker = "#### \u{1F4DD} Notes", lastKnownNoteHashes = {}, deleteProjectOnFileDelete = false) {
     this.apiClient = apiClient;
     this.taskStore = taskStore;
     this.obsidianTasksFile = obsidianTasksFile;
@@ -2767,6 +3696,7 @@ var ReverseSyncOrchestrator = class {
     this.dryRun = dryRun;
     this.projectsFolder = projectsFolder;
     this.projectTemplate = projectTemplate;
+    this.deleteProjectOnFileDelete = deleteProjectOnFileDelete;
     this._projectsCache = {};
     this._projectsFull = {};
     this._tagsCache = {};
@@ -2778,9 +3708,15 @@ var ReverseSyncOrchestrator = class {
     this.isLoadedProject = false;
     this._currentProjectFiles = {};
     this._currentNoteHashes = {};
+    /** Sync-run correlation tag, e.g. "sync:ab12cd ". Empty outside runs. */
+    this.runTag = "";
     this._lastKnownProjectFiles = lastKnownProjectFiles;
     this._notesSectionMarker = notesSectionMarker;
     this._lastKnownNoteHashes = lastKnownNoteHashes;
+  }
+  /** Set by the orchestrator per run so logs correlate across modules. */
+  setRunTag(tag) {
+    this.runTag = tag;
   }
   getProjectFiles() {
     return { ...this._currentProjectFiles };
@@ -2797,7 +3733,7 @@ var ReverseSyncOrchestrator = class {
   setArchivedObsidianIds(ids) {
     this.archivedObsidianIds = ids;
   }
-  async sync() {
+  async sync(deltaSince) {
     const stats = {
       obsidianTasks: 0,
       singularityTasks: 0,
@@ -2810,12 +3746,24 @@ var ReverseSyncOrchestrator = class {
       dbCleaned: 0
     };
     await this.loadProjects();
+    let sgTasks;
+    if (deltaSince) {
+      try {
+        sgTasks = await this.apiClient.getTasks(false, true, 1e3, void 0, { modifiedSince: deltaSince });
+      } catch (e) {
+        console.warn(`[ReverseSync] delta fetch failed, retrying as full:`, e?.message ?? e);
+        sgTasks = await this.apiClient.getTasks(false, true);
+        deltaSince = null;
+      }
+    } else {
+      sgTasks = await this.apiClient.getTasks(false, true);
+    }
+    stats.singularityTasks = sgTasks.length;
     await this.ensureProjectFiles();
     await this.syncProjectNotes();
+    await this.syncChecklists(sgTasks, deltaSince);
     await this.loadTags();
     this.loadObsidianProjects();
-    const sgTasks = await this.apiClient.getTasks(false, true);
-    stats.singularityTasks = sgTasks.length;
     const tasksToWrite = [];
     for (const sgTask of sgTasks) {
       try {
@@ -2825,7 +3773,7 @@ var ReverseSyncOrchestrator = class {
         }
       } catch (e) {
         stats.errors++;
-        console.error(`[ReverseSync] task error:`, e?.message || e, `sgTask:`, sgTask.id);
+        console.error(`[${this.runTag}ReverseSync] task error:`, e?.message || e, `sgTask:`, sgTask.id);
       }
     }
     if (!this.dryRun && tasksToWrite.length > 0) {
@@ -2847,9 +3795,8 @@ var ReverseSyncOrchestrator = class {
           this._projectsFull[id] = p;
         }
       }
-    } catch {
-      this._projectsCache = {};
-      this._projectsFull = {};
+    } catch (e) {
+      throw new SyncAbortError(`\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043F\u0440\u043E\u0435\u043A\u0442\u044B Singularity: ${e?.message ?? e}`, e);
     }
   }
   async ensureProjectFiles() {
@@ -2878,11 +3825,18 @@ var ReverseSyncOrchestrator = class {
         }
       }
     }
+    const knownMissingProjectIds = /* @__PURE__ */ new Set();
     for (const [projId] of Object.entries(this._lastKnownProjectFiles)) {
       if (!this._projectsFull[projId]) continue;
       const title = (this._projectsFull[projId].title ?? "").trim();
       const hasFileInVault = existingById.has(projId) || (title ? existingByName.has(title.toLowerCase()) : false);
       if (!hasFileInVault) {
+        if (!this.deleteProjectOnFileDelete) {
+          console.warn(`[ReverseSync] file for project "${title}" is missing \u2014 SG project kept (deleteProjectOnFileDelete=false)`);
+          this._currentProjectFiles[projId] = `${relPath}/${sanitizeProjectName(title)}.md`;
+          knownMissingProjectIds.add(projId);
+          continue;
+        }
         await this.apiClient.deleteProject(projId);
         delete this._projectsFull[projId];
         delete this._projectsCache[projId];
@@ -2891,13 +3845,15 @@ var ReverseSyncOrchestrator = class {
     for (const [projId, proj] of Object.entries(this._projectsFull)) {
       const title = (proj.title ?? "").trim();
       if (!title || title.toLowerCase() === "\u0432\u0445\u043E\u0434\u044F\u0449\u0438\u0435" || title.toLowerCase() === "inbox") continue;
+      if (knownMissingProjectIds.has(projId)) continue;
       const titleLower = title.toLowerCase();
-      const filePath = `${relPath}/${title}.md`;
+      const safeName = sanitizeProjectName(title);
+      const filePath = `${relPath}/${safeName}.md`;
       const byId = existingById.get(projId);
       if (byId) {
         this._currentProjectFiles[projId] = filePath;
         const currentName = byId.name.replace(/\.md$/, "");
-        if (currentName !== title) {
+        if (currentName !== safeName) {
           if (existingByName.has(titleLower) && existingByName.get(titleLower).path.toLowerCase() !== filePath.toLowerCase()) {
             await this.vaultWriter.addFrontmatterIfMissing(byId, projId);
           } else {
@@ -2936,7 +3892,7 @@ var ReverseSyncOrchestrator = class {
         if (noteData?.content) noteRaw = noteData.content;
       }
       const noteText = noteRaw && isNoteId(noteRaw) ? "" : extractNoteText(noteRaw);
-      if (noteText) this._currentNoteHashes[projId] = simpleHash2(noteText);
+      if (noteText) this._currentNoteHashes[projId] = simpleHash(noteText);
       let content;
       if (this.projectTemplate) {
         const now = /* @__PURE__ */ new Date();
@@ -2963,6 +3919,20 @@ var ReverseSyncOrchestrator = class {
       }
     }
   }
+  /** Locate the notes section in file lines. Returns marker/section bounds. */
+  findNotesSection(lines) {
+    const markerIdx = lines.findIndex((l) => l.trim() === this._notesSectionMarker);
+    if (markerIdx === -1) return { markerIdx, sectionEnd: lines.length };
+    let sectionEnd = lines.length;
+    for (let i = markerIdx + 1; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (trimmed.startsWith("#") && trimmed !== this._notesSectionMarker) {
+        sectionEnd = i;
+        break;
+      }
+    }
+    return { markerIdx, sectionEnd };
+  }
   async syncProjectNotes() {
     if (this.dryRun) return;
     const relPath = this.projectsFolder.replace(/^\/+/, "");
@@ -2980,50 +3950,133 @@ var ReverseSyncOrchestrator = class {
         if (!noteRaw || isNoteId(noteRaw)) continue;
       }
       const noteText = extractNoteText(noteRaw);
-      const newHash = simpleHash2(noteText);
+      const newHash = simpleHash(noteText);
       if (this._currentNoteHashes[projId] === newHash) continue;
       this._currentNoteHashes[projId] = newHash;
       const oldHash = this._lastKnownNoteHashes[projId];
       if (oldHash === newHash) continue;
       const title = (proj.title ?? "").trim();
       if (!title) continue;
-      const filePath = `${relPath}/${title}.md`;
+      const filePath = `${relPath}/${sanitizeProjectName(title)}.md`;
       const file = this.vault.getAbstractFileByPath(filePath);
       if (!(file instanceof import_obsidian9.TFile)) continue;
       const content = await this.vault.read(file);
       const lines = content.split("\n");
-      const marker = this._notesSectionMarker;
-      const markerIdx = lines.findIndex((l) => l.trim() === marker);
+      const { markerIdx, sectionEnd } = this.findNotesSection(lines);
       if (markerIdx === -1) {
         const lastLine = lines[lines.length - 1];
         const needsBlank = lastLine !== "";
         lines.push(
           needsBlank ? `
-${marker}
+${this._notesSectionMarker}
 ${noteText}
-` : `${marker}
+` : `${this._notesSectionMarker}
 ${noteText}
 `
         );
+        await this.vault.modify(file, lines.join("\n"));
       } else {
-        let sectionEnd = lines.length;
-        for (let i = markerIdx + 1; i < lines.length; i++) {
-          const trimmed = lines[i].trim();
-          if (trimmed.startsWith("#") && trimmed !== marker) {
-            sectionEnd = i;
-            break;
-          }
-        }
+        const sectionLines = lines.slice(markerIdx + 1, sectionEnd);
+        const { items } = splitNotesSection(sectionLines);
         const before = lines.slice(0, markerIdx + 1);
         const after = lines.slice(sectionEnd);
         const newContent = [
           ...before,
           "",
+          ...items.map((i) => i.raw),
+          ...items.length ? [""] : [],
           ...noteText.split("\n"),
           "",
           ...after
         ].join("\n");
-        await this.vault.modify(file, newContent);
+        if (newContent !== content) await this.vault.modify(file, newContent);
+      }
+    }
+  }
+  /**
+   * Reverse checklist sync: SG checklist items → anchored boxes in the notes
+   * section of the parent task's project file. Inbox tasks' items are skipped
+   * (inbox file has no notes section). Non-fatal: failures warn and the task
+   * sync continues — checklist writes only add/update anchored lines.
+   */
+  async syncChecklists(sgTasks, deltaSince) {
+    if (this.dryRun) return;
+    let items;
+    try {
+      items = await this.apiClient.getChecklistItems(
+        void 0,
+        false,
+        500,
+        deltaSince ? { modifiedSince: deltaSince } : void 0
+      );
+    } catch (e) {
+      console.warn(`[ReverseSync] checklist fetch failed, skipping:`, e?.message ?? e);
+      return;
+    }
+    if (items.length === 0) return;
+    const projectByTask = /* @__PURE__ */ new Map();
+    for (const t of sgTasks) {
+      if (t.id && t.projectId) projectByTask.set(t.id, t.projectId);
+    }
+    const byFile = /* @__PURE__ */ new Map();
+    let skippedInbox = 0;
+    for (const it of items) {
+      if (!it.id || it.removed) continue;
+      const projId = projectByTask.get(it.parent ?? "");
+      const proj = projId ? this._projectsFull[projId] : null;
+      const title = (proj?.title ?? "").trim();
+      if (!title) {
+        skippedInbox++;
+        continue;
+      }
+      const relPath = this.projectsFolder.replace(/^\/+/, "");
+      const filePath = `${relPath}/${sanitizeProjectName(title)}.md`;
+      if (!byFile.has(filePath)) byFile.set(filePath, []);
+      byFile.get(filePath).push({ id: it.id, title: it.title ?? "", done: !!it.done });
+    }
+    if (skippedInbox > 0) {
+      console.warn(`[ReverseSync] skipped ${skippedInbox} checklist item(s) of inbox tasks (no notes section)`);
+    }
+    const dropMissing = !deltaSince;
+    for (const [filePath, sgItems] of byFile) {
+      const file = this.vault.getAbstractFileByPath(filePath);
+      if (!(file instanceof import_obsidian9.TFile)) continue;
+      try {
+        const content = await this.vault.read(file);
+        const lines = content.split("\n");
+        const { markerIdx, sectionEnd } = this.findNotesSection(lines);
+        if (markerIdx === -1) {
+          const lastLine = lines[lines.length - 1];
+          lines.push(
+            lastLine !== "" ? `
+${this._notesSectionMarker}
+${sgItems.map((s) => formatChecklistLine(s.title, s.done, s.id)).join("\n")}
+` : `${this._notesSectionMarker}
+${sgItems.map((s) => formatChecklistLine(s.title, s.done, s.id)).join("\n")}
+`
+          );
+          await this.vault.modify(file, lines.join("\n"));
+          continue;
+        }
+        const sectionLines = lines.slice(markerIdx + 1, sectionEnd);
+        const { items: existing, noteLines } = splitNotesSection(sectionLines);
+        const merged = mergeChecklist(existing, sgItems, dropMissing);
+        if (merged.appended.length === 0 && merged.lines.length === existing.length && merged.lines.every((l, i) => l === existing[i].raw)) {
+          continue;
+        }
+        const newContent = [
+          ...lines.slice(0, markerIdx + 1),
+          "",
+          ...merged.lines,
+          ...merged.appended,
+          ...merged.lines.length + merged.appended.length ? [""] : [],
+          ...noteLines,
+          "",
+          ...lines.slice(sectionEnd)
+        ].join("\n");
+        if (newContent !== content) await this.vault.modify(file, newContent);
+      } catch (e) {
+        console.warn(`[ReverseSync] checklist merge failed for ${filePath}:`, e?.message ?? e);
       }
     }
   }
@@ -3038,7 +4091,8 @@ ${noteText}
         this._tagsCache[cleanId] = title;
         this._tagsCache[tagId] = title;
       }
-    } catch {
+    } catch (e) {
+      console.warn(`[ReverseSync] loadTags failed, continuing without tag names:`, e?.message ?? e);
       this._tagsCache = {};
     }
   }
@@ -3072,6 +4126,7 @@ ${noteText}
     const tags = sgTask.tags ?? [];
     const sgId = sgTask.id;
     if (sgTask.recurrence) return { ok: false, reason: "recurrence template" };
+    if (sgTask.isNote) return { ok: false, reason: "isNote entity" };
     const excluded = this.excludeTags.map((t) => t.toLowerCase());
     for (const tagVal of tags) {
       const raw = tagVal.toLowerCase().replace(/^a-/, "");
@@ -3173,6 +4228,7 @@ ${noteText}
       cancelledDate: checked === 2 ? utcIsoToLocalDate(sgTask.deleteDate) ?? utcIsoToLocalDate(sgTask.journalDate) ?? (/* @__PURE__ */ new Date()).toISOString().split("T")[0] : null,
       reminderDate,
       priority: priority != null ? mapPriorityFromSingularity(Number(priority)) : "high" /* High */,
+      durationMinutes: typeof sgTask.timeLength === "number" ? sgTask.timeLength : null,
       lastSyncedAt: null,
       syncHash: null,
       stableHash: computeStableHash(this.obsidianTasksFile, `- [ ] #todo ${title}`)
@@ -3199,7 +4255,7 @@ ${noteText}
   async writeTasks(tasks) {
     const byFile = /* @__PURE__ */ new Map();
     for (const task of tasks) {
-      const targetPath = task.projectTag ? `${this.projectsFolder}/${task.projectTag}.md` : this.obsidianTasksFile;
+      const targetPath = task.projectTag ? `${this.projectsFolder}/${sanitizeProjectName(task.projectTag)}.md` : this.obsidianTasksFile;
       if (!byFile.has(targetPath)) byFile.set(targetPath, []);
       byFile.get(targetPath).push(task);
     }
@@ -3211,13 +4267,15 @@ ${noteText}
 
 // src/orchestrators/bidirectional-sync.ts
 var BidirectionalSyncOrchestrator = class {
-  constructor(vaultReader, apiClient, taskStore, obsidianTasksFile, vault, vaultWriter, excludeTags = [], dryRun = false, projectsFolder = "/project", conflictStrategy = "latest_wins" /* LatestWins */, conflictPromptFn, projectTemplate = "", lastKnownProjectFiles = {}, notesSectionMarker = "#### \u{1F4DD} Notes", lastKnownNoteHashes = {}) {
+  constructor(vaultReader, apiClient, taskStore, obsidianTasksFile, vault, vaultWriter, excludeTags = [], dryRun = false, projectsFolder = "/project", conflictStrategy = "latest_wins" /* LatestWins */, conflictPromptFn, projectTemplate = "", lastKnownProjectFiles = {}, notesSectionMarker = "#### \u{1F4DD} Notes", lastKnownNoteHashes = {}, deleteProjectOnFileDelete = false, deltaSince = null) {
     this.conflictStrategy = conflictStrategy;
     this.conflictPromptFn = conflictPromptFn;
     this.projectTemplate = projectTemplate;
     this.lastKnownProjectFiles = lastKnownProjectFiles;
     this.notesSectionMarker = notesSectionMarker;
     this.lastKnownNoteHashes = lastKnownNoteHashes;
+    this.deleteProjectOnFileDelete = deleteProjectOnFileDelete;
+    this.deltaSince = deltaSince;
     this.vaultWriter = vaultWriter;
     this.forward = new ForwardSyncOrchestrator(
       vaultReader,
@@ -3239,7 +4297,8 @@ var BidirectionalSyncOrchestrator = class {
       projectTemplate,
       lastKnownProjectFiles,
       notesSectionMarker,
-      lastKnownNoteHashes
+      lastKnownNoteHashes,
+      deleteProjectOnFileDelete
     );
   }
   getProjectFiles() {
@@ -3248,8 +4307,11 @@ var BidirectionalSyncOrchestrator = class {
   getNoteHashes() {
     return this.reverse.getNoteHashes();
   }
-  async sync(tasksFile, projectsFolder) {
-    const stats = await this.forward.sync(tasksFile, projectsFolder);
+  async sync(tasksFile, projectsFolder, runId) {
+    const tag = runId ? `sync:${runId} ` : "";
+    this.forward.setRunTag(tag);
+    this.reverse.setRunTag(tag);
+    const stats = await this.forward.sync(tasksFile, projectsFolder, this.notesSectionMarker);
     const obsidianTasks = await this.forward.getVaultReader().readAllTasks(tasksFile, projectsFolder);
     await this.vaultWriter.normalizeTaskLines(obsidianTasks);
     const currentIds = new Set(obsidianTasks.map((t) => t.id));
@@ -3258,24 +4320,38 @@ var BidirectionalSyncOrchestrator = class {
     stats.deleted += deletedIds.size;
     this.reverse.setDeletedFromObsidian(deletedIds);
     this.reverse.setArchivedObsidianIds(this.forward.getArchivedObsidianIds());
-    const reverseStats = await this.reverse.sync();
+    const reverseStats = await this.reverse.sync(this.deltaSince);
     stats.singularityTasks = reverseStats.singularityTasks;
     stats.created += reverseStats.created;
     stats.updated += reverseStats.updated;
     stats.archived += reverseStats.archived;
     stats.errors += reverseStats.errors;
     stats.skipped += reverseStats.skipped;
-    const sgTasks = await this.forward.getApiClient().getTasks(true, true);
-    const sgIds = new Set(sgTasks.map((t) => t.id).filter(Boolean));
-    stats.dbCleaned = await this.forward.getTaskStore().deleteOrphanedRecords(currentIds, sgIds);
+    try {
+      const sgTasks = await this.forward.getApiClient().getTasks(true, true);
+      const sgIds = new Set(sgTasks.map((t) => t.id).filter(Boolean));
+      stats.dbCleaned = await this.forward.getTaskStore().deleteOrphanedRecords(currentIds, sgIds);
+    } catch (e) {
+      console.warn(`[BidirectionalSync] cleanup skipped: failed to reload SG tasks:`, e?.message ?? e);
+    }
     return stats;
   }
 };
 
 // src/main.ts
+function formatElapsed(totalSeconds) {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor(totalSeconds % 3600 / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}\u0447 ${m}\u043C`;
+  if (m > 0) return `${m}\u043C ${s}\u0441`;
+  return `${s}\u0441`;
+}
 var SingularitySyncPlugin = class extends import_obsidian10.Plugin {
   constructor() {
     super(...arguments);
+    this.activeTimer = null;
+    this._syncing = false;
     this._ssWorking = true;
     this._habitsChangedCbs = /* @__PURE__ */ new Set();
   }
@@ -3289,6 +4365,7 @@ var SingularitySyncPlugin = class extends import_obsidian10.Plugin {
       if (existing.habitState) clean.habitState = existing.habitState;
       if (existing.projectFiles) clean.projectFiles = existing.projectFiles;
       if (existing.noteHashes) clean.noteHashes = existing.noteHashes;
+      if (existing.activeTimer) clean.activeTimer = existing.activeTimer;
       await this.saveData(clean);
     });
     this.statusBar = this.addStatusBarItem();
@@ -3318,6 +4395,15 @@ var SingularitySyncPlugin = class extends import_obsidian10.Plugin {
       name: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u0430\u043D\u0435\u043B\u044C Singularity",
       callback: () => this.openSingularityView()
     });
+    this.addCommand({
+      id: "timer-stop",
+      name: "\u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C \u0442\u0440\u0435\u043A\u0438\u043D\u0433 \u0432\u0440\u0435\u043C\u0435\u043D\u0438",
+      callback: () => this.stopTimer()
+    });
+    this.app.workspace.onLayoutReady(() => {
+      setTimeout(() => this.restoreTimer().catch(() => {
+      }), 800);
+    });
     registerHabitsPostProcessor(this);
   }
   /** Init a view leaf: restore habit state, set up change callback, attach API client */
@@ -3335,6 +4421,10 @@ var SingularitySyncPlugin = class extends import_obsidian10.Plugin {
       this.emitHabitsChanged();
     });
     view.habitDaysCount = this.settings.habitDaysCount;
+    view.activeTimerTaskId = this.activeTimer?.taskId ?? null;
+    view.setTimerToggleCallback(async (sgTaskId, title) => {
+      await this.toggleTimer(sgTaskId, title);
+    });
     view.setTaskCheckCallback(async (sgTaskId, checked, title) => {
       if (!title) return;
       const state = this.taskStore.getBySingularityId(sgTaskId);
@@ -3458,9 +4548,21 @@ var SingularitySyncPlugin = class extends import_obsidian10.Plugin {
     new import_obsidian10.Notice("\u{1F5D1}\uFE0F \u041A\u043B\u044E\u0447 \u0443\u0434\u0430\u043B\u0451\u043D", 3e3);
   }
   async runSync() {
+    if (this._syncing) {
+      new import_obsidian10.Notice("\u0421\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u044F \u0443\u0436\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F\u2026", 2500);
+      return;
+    }
+    this._syncing = true;
     new import_obsidian10.Notice("\u{1F504} \u0421\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u044F...");
     let stats = null;
     try {
+      const problems = validateSyncSettings(this.settings, this.hasApiKey());
+      if (problems.length > 0) {
+        const shown = problems.slice(0, 3).join("; ");
+        const more = problems.length > 3 ? ` (+${problems.length - 3})` : "";
+        new import_obsidian10.Notice(`\u274C \u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438: ${shown}${more}`, 8e3);
+        return;
+      }
       const apiKey = await this.getApiKey();
       const apiClient = new SingularityAPIClient({
         apiKey,
@@ -3471,16 +4573,43 @@ var SingularitySyncPlugin = class extends import_obsidian10.Plugin {
       const data = await this.loadData();
       const savedState = data.syncState ?? [];
       this.taskStore.load(savedState);
+      let manualCount = 0;
+      let bulkChoice = null;
       const conflictPromptFn = async (obTask, sgTask, state, reason, _msg) => {
-        return new ConflictModal(this.app, obTask, sgTask, state, {
+        if (bulkChoice) return bulkChoice;
+        manualCount++;
+        const choice = await new ConflictModal(this.app, obTask, sgTask, state, {
           reason,
+          progress: { current: manualCount },
           resolveProjectName: async (projectId) => {
             const proj = await apiClient.getProjectById(projectId);
             return proj?.title ?? null;
           },
-          resolveTagName: async (tagId) => apiClient.getTagTitle(tagId)
+          resolveTagName: async (tagId) => apiClient.getTagTitle(tagId),
+          resolveGroupName: async (groupId) => apiClient.getTaskGroupTitle(groupId)
         }).waitForChoice();
+        if (choice === "obsidian_all") {
+          bulkChoice = "obsidian";
+          new import_obsidian10.Notice("\u041F\u0440\u0438\u043C\u0435\u043D\u0435\u043D\u043E \u043A\u043E \u0432\u0441\u0435\u043C: \u0432\u0435\u0440\u0441\u0438\u044F Obsidian", 3e3);
+          return "obsidian";
+        }
+        if (choice === "singularity_all") {
+          bulkChoice = "singularity";
+          new import_obsidian10.Notice("\u041F\u0440\u0438\u043C\u0435\u043D\u0435\u043D\u043E \u043A\u043E \u0432\u0441\u0435\u043C: \u0432\u0435\u0440\u0441\u0438\u044F Singularity", 3e3);
+          return "singularity";
+        }
+        return choice;
       };
+      const FULL_SYNC_INTERVAL_MS = 24 * 3600 * 1e3;
+      const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+      const lastFull = data.lastFullSyncAt ?? null;
+      const lastFullMs = lastFull ? Date.parse(lastFull) : NaN;
+      const fullDue = !lastFull || isNaN(lastFullMs) || Date.parse(nowIso) - lastFullMs >= FULL_SYNC_INTERVAL_MS;
+      const deltaSince = fullDue ? null : data.lastDeltaSyncAt ?? lastFull;
+      if (!fullDue) console.log(`[SingularitySync] delta sync since ${deltaSince}`);
+      const runId = `${Date.now().toString(36)}${Math.floor(Math.random() * 16777215).toString(36)}`;
+      const runStartedAt = Date.now();
+      console.log(`[SingularitySync] run ${runId} started (${fullDue ? "full" : "delta"})`);
       const orchestrator = new BidirectionalSyncOrchestrator(
         vaultReader,
         apiClient,
@@ -3496,27 +4625,51 @@ var SingularitySyncPlugin = class extends import_obsidian10.Plugin {
         this.settings.projectTemplate,
         data.projectFiles ?? {},
         this.settings.notesSectionMarker,
-        data.noteHashes ?? {}
+        data.noteHashes ?? {},
+        this.settings.deleteProjectOnFileDelete ?? false,
+        deltaSince
       );
       stats = await orchestrator.sync(
         this.settings.obsidianTasksFile,
-        this.settings.obsidianProjectsFolder
+        this.settings.obsidianProjectsFolder,
+        runId
       );
       const syncState = this.taskStore.getAll();
       data.syncState = syncState;
       data.projectFiles = orchestrator.getProjectFiles();
       data.noteHashes = orchestrator.getNoteHashes();
+      data.lastDeltaSyncAt = nowIso;
+      if (fullDue) data.lastFullSyncAt = nowIso;
+      data.lastSync = {
+        runId,
+        at: nowIso,
+        mode: fullDue ? "full" : "delta",
+        durationMs: Date.now() - runStartedAt,
+        stats: stats ? {
+          created: stats.created,
+          updated: stats.updated,
+          archived: stats.archived,
+          deleted: stats.deleted,
+          errors: stats.errors,
+          skipped: stats.skipped,
+          dbCleaned: stats.dbCleaned
+        } : null
+      };
       await this.saveData(data);
+      console.log(`[SingularitySync] run ${runId} finished in ${data.lastSync.durationMs}ms`, data.lastSync.stats);
       const now = /* @__PURE__ */ new Date();
       const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
       this.statusBar.setText(`Singularity: \u2705 ${time}`);
-      let msg = `\u2705 \u0421\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u044F \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0430`;
+      if (this.activeTimer) this.renderTimerStatus();
+      let msg = `\u2705 \u0421\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u044F \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0430 (${fullDue ? "\u043F\u043E\u043B\u043D\u0430\u044F" : "\u0434\u0435\u043B\u044C\u0442\u0430"})`;
       if (stats.dbCleaned > 0) msg += `. \u{1F5D1}\uFE0F \u0423\u0434\u0430\u043B\u0435\u043D\u043E ${stats.dbCleaned} \u0437\u0430\u0434\u0430\u0447-\u043F\u0440\u0438\u0437\u0440\u0430\u043A\u043E\u0432`;
       new import_obsidian10.Notice(msg, 3e3);
       this.refreshSingularityView();
     } catch (e) {
       const errMsg = e?.message || String(e);
       new import_obsidian10.Notice(`\u274C \u041E\u0448\u0438\u0431\u043A\u0430: ${errMsg}`, 5e3);
+    } finally {
+      this._syncing = false;
     }
   }
   async refreshSingularityView() {
@@ -3525,6 +4678,81 @@ var SingularitySyncPlugin = class extends import_obsidian10.Plugin {
       const view = leaf.view;
       if (view?.refresh) await view.refresh();
     }
+  }
+  // ===== Time tracking =====
+  async restoreTimer() {
+    const data = await this.loadData() ?? {};
+    const t = data.activeTimer;
+    if (t?.taskId && t?.startIso && !isNaN(Date.parse(t.startIso))) {
+      this.activeTimer = { taskId: t.taskId, title: t.title || "(\u0431\u0435\u0437 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u044F)", startIso: t.startIso };
+      this.renderTimerStatus();
+      this.syncTimerToViews();
+    }
+  }
+  async persistTimer() {
+    const data = await this.loadData() ?? {};
+    if (this.activeTimer) data.activeTimer = { ...this.activeTimer };
+    else delete data.activeTimer;
+    delete data.singularityApiKey;
+    delete data.singularityMcpToken;
+    delete data.singularityMcpBaseUrl;
+    await this.saveData(data);
+  }
+  renderTimerStatus() {
+    if (!this.statusBar) return;
+    if (this.activeTimer) {
+      this.statusBar.setText(`Singularity: \u23F1 ${this.activeTimer.title}`);
+    } else {
+      this.statusBar.setText("Singularity: \u2014");
+    }
+  }
+  syncTimerToViews() {
+    const leaves = this.app.workspace.getLeavesOfType(SINGULARITY_VIEW_TYPE);
+    for (const leaf of leaves) {
+      const view = leaf.view;
+      if (view && "activeTimerTaskId" in view) {
+        view.activeTimerTaskId = this.activeTimer?.taskId ?? null;
+      }
+    }
+  }
+  async toggleTimer(sgTaskId, title) {
+    if (this.activeTimer?.taskId === sgTaskId) {
+      await this.stopTimer();
+      return;
+    }
+    if (this.activeTimer) await this.stopTimer(true);
+    if (!this.hasApiKey()) {
+      new import_obsidian10.Notice("\u041D\u0435\u0442 API-\u043A\u043B\u044E\u0447\u0430 Singularity");
+      return;
+    }
+    this.activeTimer = { taskId: sgTaskId, title: title || "(\u0431\u0435\u0437 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u044F)", startIso: (/* @__PURE__ */ new Date()).toISOString() };
+    await this.persistTimer();
+    this.renderTimerStatus();
+    this.syncTimerToViews();
+    new import_obsidian10.Notice(`\u25B6 \u0422\u0440\u0435\u043A\u043A\u0438\u043D\u0433: ${this.activeTimer.title}`);
+    await this.refreshSingularityView();
+  }
+  async stopTimer(silent = false) {
+    if (!this.activeTimer) {
+      if (!silent) new import_obsidian10.Notice("\u041D\u0435\u0442 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0433\u043E \u0442\u0440\u0435\u043A\u0438\u043D\u0433\u0430");
+      return;
+    }
+    const { taskId, title, startIso } = this.activeTimer;
+    const elapsed = Math.max(0, Math.floor((Date.now() - Date.parse(startIso)) / 1e3));
+    const client = this.getApiClient();
+    this.activeTimer = null;
+    await this.persistTimer();
+    this.renderTimerStatus();
+    this.syncTimerToViews();
+    if (client && elapsed > 0) {
+      try {
+        await client.createTimeStat(new Date(startIso).toISOString(), elapsed, taskId);
+      } catch {
+        new import_obsidian10.Notice("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0437\u0430\u043F\u0438\u0441\u044C \u0432\u0440\u0435\u043C\u0435\u043D\u0438", 4e3);
+      }
+    }
+    if (!silent) new import_obsidian10.Notice(`\u23F9 ${title}: ${formatElapsed(elapsed)}`);
+    await this.refreshSingularityView();
   }
   async resetAndSync() {
     new import_obsidian10.Notice("\u{1F5D1}\uFE0F \u0421\u0431\u0440\u043E\u0441 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u044F...", 2e3);
