@@ -1,6 +1,6 @@
 # Singularity Sync
 
-![Version](https://img.shields.io/badge/version-2.5.1-blue)
+![Version](https://img.shields.io/badge/version-2.6.0-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.5%2B-purple)
 
 > **🌐 [Русская версия](README.ru.md)**
@@ -257,6 +257,10 @@ days: 14
 | `Singularity Sync: Check connection` | Validate API key and connection |
 | `Singularity Sync: Open Singularity Panel` | Open the sidebar view |
 | `Singularity Sync: Stop time tracking` | Stop the active time tracker |
+
+### Time tracking
+
+Start/stop buttons (`▶`/`⏹`) on sidebar task rows track time locally: start time in the status bar, live elapsed on the row, start → finish in the stop notice. Stopped sessions land in the `⏱ Journal` tab as copy-ready lines (`date · title · start → end · duration`) for manual entry into Singularity. The **Local-only time tracking** setting (for plans without time-stat API scope) disables network posts entirely.
 
 ---
 

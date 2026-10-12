@@ -40,6 +40,7 @@ var DEFAULT_SETTINGS = {
   syncExcludeTags: "GC,nd",
   syncDryRun: false,
   deleteProjectOnFileDelete: false,
+  localOnlyTimer: false,
   habitDaysCount: 14
 };
 function validateSyncSettings(s, hasApiKey) {
@@ -196,6 +197,14 @@ var SingularitySyncSettingTab = class extends import_obsidian.PluginSettingTab {
         this.scheduleSave();
       })
     );
+    new import_obsidian.Setting(containerEl).setName("\u0422\u043E\u043B\u044C\u043A\u043E \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u0442\u0440\u0435\u043A\u0438\u043D\u0433 \u0432\u0440\u0435\u043C\u0435\u043D\u0438").setDesc("\u041D\u0435 \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u0442\u044C \u0437\u0430\u043F\u0438\u0441\u0438 \u0442\u0430\u0439\u043C\u0435\u0440\u0430 \u0432 Singularity (\u0434\u043B\u044F \u0442\u0430\u0440\u0438\u0444\u043E\u0432 \u0431\u0435\u0437 time-stat API). \u0421\u0435\u0441\u0441\u0438\u0438 \u043F\u0438\u0448\u0443\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u0432 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u0436\u0443\u0440\u043D\u0430\u043B.").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.localOnlyTimer ?? false).onChange(async (val) => {
+        this.plugin.settings.localOnlyTimer = val;
+        this.scheduleSave();
+        this.plugin.syncTimerToViews();
+        this.plugin.refreshSingularityView();
+      })
+    );
     containerEl.createEl("h3", { text: "\u2705 \u041F\u0440\u0438\u0432\u044B\u0447\u043A\u0438" });
     const setting = new import_obsidian.Setting(containerEl).setName("\u0414\u043D\u0435\u0439 \u0434\u043B\u044F \u043E\u0442\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u044F").setDesc(`\u041A\u043E\u043B\u0438\u0447\u0435\u0441\u0442\u0432\u043E \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0438\u0445 \u0434\u043D\u0435\u0439 \u0434\u043B\u044F \u043E\u0442\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u044F \u043F\u0440\u043E\u0433\u0440\u0435\u0441\u0441\u0430 \u043F\u0440\u0438\u0432\u044B\u0447\u0435\u043A \u043D\u0430 \u043F\u0430\u043D\u0435\u043B\u0438 (\u0441\u0435\u0439\u0447\u0430\u0441: ${this.plugin.settings.habitDaysCount})`).addSlider(
       (slider) => slider.setLimits(1, 14, 1).setValue(this.plugin.settings.habitDaysCount).onChange(async (val) => {
@@ -288,8 +297,8 @@ function formatDateForApi(dateValue, useTime) {
   if (d < 1 || d > dim) throw new Error(`\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0434\u0435\u043D\u044C \u0432 \u0434\u0430\u0442\u0435 \u0434\u043B\u044F API: "${dateValue}"`);
   if (h > 23 || mi > 59 || s > 59) throw new Error(`\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0432\u0440\u0435\u043C\u044F \u0432 \u0434\u0430\u0442\u0435 \u0434\u043B\u044F API: "${dateValue}"`);
   const at = new Date(y, mo - 1, d, h, mi, s);
-  const p2 = (n) => String(n).padStart(2, "0");
-  return `${m[1]}-${m[2]}-${m[3]}T${p2(h)}:${p2(mi)}:${p2(s)}${offsetStringFor(at)}`;
+  const p22 = (n) => String(n).padStart(2, "0");
+  return `${m[1]}-${m[2]}-${m[3]}T${p22(h)}:${p22(mi)}:${p22(s)}${offsetStringFor(at)}`;
 }
 function utcIsoToLocalDate(value) {
   if (!value) return null;
@@ -1300,6 +1309,37 @@ var SingularityAPIClient = class {
 
 // src/ui/singularity-view.ts
 var import_obsidian5 = require("obsidian");
+
+// src/domain/timer-log.ts
+var TIMER_LOG_CAP = 100;
+var p2 = (n) => String(n).padStart(2, "0");
+function formatClock(d) {
+  return `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+}
+function formatClockIso(iso) {
+  return formatClock(new Date(iso));
+}
+function todayLocalDate(d = /* @__PURE__ */ new Date()) {
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+}
+function formatElapsedDetail(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor(s % 3600 / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}\u0447 ${m}\u043C`;
+  if (m > 0) return `${m}\u043C ${sec}\u0441`;
+  return `${sec}\u0441`;
+}
+function formatLogLine(e) {
+  return `${e.date} \xB7 ${e.title} \xB7 ${e.start} \u2192 ${e.end} \xB7 ${formatElapsedDetail(e.minutes * 60)}`;
+}
+function appendLog(log, entry) {
+  if (!entry || !entry.taskId || !entry.start || !entry.end) return log;
+  return [entry, ...log].slice(0, TIMER_LOG_CAP);
+}
+
+// src/ui/singularity-view.ts
 var SINGULARITY_VIEW_TYPE = "singularity-tasks-view";
 var DAY_MS = 864e5;
 function fmtLocal(d) {
@@ -1367,8 +1407,24 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
     this.onTaskCheck = null;
     this.onTimerToggle = null;
     this.activeTimerTaskId = null;
+    this.activeTimerStartIso = null;
+    this.localOnlyTimer = false;
+    this.onGetTimerLog = null;
+    this.onClearTimerLog = null;
+    this.ticker = null;
+    this.activeTimerBadge = null;
     /** Session-level skip list for decoration sweeps the token may not access. */
     this.noScopeSweeps = /* @__PURE__ */ new Set();
+  }
+  onunload() {
+    this.stopTicker();
+  }
+  stopTicker() {
+    if (this.ticker) {
+      clearInterval(this.ticker);
+      this.ticker = null;
+    }
+    this.activeTimerBadge = null;
   }
   setStateChangeCallback(cb) {
     this.onStateChange = cb;
@@ -1378,6 +1434,10 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
   }
   setTimerToggleCallback(cb) {
     this.onTimerToggle = cb;
+  }
+  setTimerLogCallbacks(getLog, clearLog) {
+    this.onGetTimerLog = getLog;
+    this.onClearTimerLog = clearLog;
   }
   loadState(state) {
     this.habitsProgress = state;
@@ -1472,14 +1532,17 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
   }
   render() {
     const { contentEl } = this;
+    this.stopTicker();
     contentEl.empty();
     const header = contentEl.createDiv("singularity-view-header");
     header.createEl("h3", { text: "Singularity" });
     const tabs = contentEl.createDiv("singularity-view-tabs");
     const tasksTab = tabs.createEl("span", { text: "\u{1F4CB} \u0417\u0430\u0434\u0430\u0447\u0438", cls: "singularity-view-tab" });
     const habitsTab = tabs.createEl("span", { text: "\u2705 \u041F\u0440\u0438\u0432\u044B\u0447\u043A\u0438", cls: "singularity-view-tab" });
+    const timerTab = tabs.createEl("span", { text: "\u23F1 \u0416\u0443\u0440\u043D\u0430\u043B", cls: "singularity-view-tab" });
     if (this.activeTab === "tasks") tasksTab.addClass("active");
-    else habitsTab.addClass("active");
+    else if (this.activeTab === "habits") habitsTab.addClass("active");
+    else timerTab.addClass("active");
     tasksTab.onclick = () => {
       this.activeTab = "tasks";
       this.render();
@@ -1488,8 +1551,89 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
       this.activeTab = "habits";
       this.render();
     };
+    timerTab.onclick = () => {
+      this.activeTab = "timer";
+      this.render();
+    };
     if (this.activeTab === "tasks") this.renderTasks(contentEl);
-    else this.renderHabits(contentEl);
+    else if (this.activeTab === "habits") this.renderHabits(contentEl);
+    else this.renderTimerLog(contentEl);
+    this.maybeStartTicker();
+  }
+  liveTimerText() {
+    const start = new Date(this.activeTimerStartIso ?? Date.now());
+    const secs = Math.max(0, Math.floor((Date.now() - start.getTime()) / 1e3));
+    const p = (n) => String(n).padStart(2, "0");
+    return `\u23F9 ${p(start.getHours())}:${p(start.getMinutes())} \xB7 ${fmtTracked(secs)}`;
+  }
+  updateLiveBadge() {
+    if (this.activeTimerBadge) this.activeTimerBadge.setText(this.liveTimerText());
+  }
+  maybeStartTicker() {
+    if (!this.activeTimerBadge || !this.activeTimerStartIso) return;
+    this.updateLiveBadge();
+    this.ticker = setInterval(() => this.updateLiveBadge(), 3e4);
+  }
+  async copyText(text) {
+    try {
+      const nav = globalThis?.navigator;
+      if (nav?.clipboard?.writeText) {
+        await nav.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+    }
+    return false;
+  }
+  // =========== TIMER JOURNAL ===========
+  renderTimerLog(container) {
+    const entries = this.onGetTimerLog ? this.onGetTimerLog() : [];
+    const list = container.createDiv("singularity-view-list");
+    if (entries.length === 0) {
+      list.createEl("p", { text: "\u23F1 \u0416\u0443\u0440\u043D\u0430\u043B \u043F\u0443\u0441\u0442 \u2014 \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u0435 \u0442\u0430\u0439\u043C\u0435\u0440, \u0438 \u0441\u0435\u0441\u0441\u0438\u044F \u043F\u043E\u044F\u0432\u0438\u0442\u0441\u044F \u0437\u0434\u0435\u0441\u044C", cls: "singularity-view-empty" });
+      return;
+    }
+    for (const e of entries) {
+      const line = formatLogLine(e);
+      const row = list.createDiv("singularity-view-timer-row");
+      const textInput = row.createEl("input", {
+        type: "text",
+        cls: "singularity-view-timer-line",
+        attr: { readonly: true }
+      });
+      textInput.value = line;
+      textInput.onclick = () => {
+        textInput.select();
+      };
+      const copy = row.createEl("button", {
+        text: "\u{1F4CB}",
+        cls: "singularity-view-copy-btn",
+        attr: { title: "\u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0441\u0442\u0440\u043E\u043A\u0443" }
+      });
+      copy.onclick = async () => {
+        if (await this.copyText(line)) new import_obsidian5.Notice("\u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u043E");
+        else new import_obsidian5.Notice("\u0412\u044B\u0434\u0435\u043B\u0438\u0442\u0435 \u0441\u0442\u0440\u043E\u043A\u0443 \u0438 \u0441\u043A\u043E\u043F\u0438\u0440\u0443\u0439\u0442\u0435 \u0432\u0440\u0443\u0447\u043D\u0443\u044E", 4e3);
+      };
+    }
+    const footer = list.createDiv("singularity-view-timer-footer");
+    const clear = footer.createEl("button", { text: "\u041E\u0447\u0438\u0441\u0442\u0438\u0442\u044C \u0436\u0443\u0440\u043D\u0430\u043B" });
+    let armed = false;
+    let armTimer = null;
+    clear.onclick = async () => {
+      if (!this.onClearTimerLog) return;
+      if (!armed) {
+        armed = true;
+        clear.setText("\u0422\u043E\u0447\u043D\u043E \u043E\u0447\u0438\u0441\u0442\u0438\u0442\u044C?");
+        armTimer = setTimeout(() => {
+          armed = false;
+          clear.setText("\u041E\u0447\u0438\u0441\u0442\u0438\u0442\u044C \u0436\u0443\u0440\u043D\u0430\u043B");
+        }, 5e3);
+        return;
+      }
+      if (armTimer) clearTimeout(armTimer);
+      await this.onClearTimerLog();
+      this.render();
+    };
   }
   // =========== TASKS ===========
   renderTasks(container) {
@@ -1580,8 +1724,13 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
         if (task.group && this.groupNames[task.group]) {
           item.createSpan({ text: ` \u{1F4C2} ${this.groupNames[task.group]}`, cls: "singularity-view-task-group" });
         }
-        if (this.timeByTask[task.id]) {
+        if (this.timeByTask[task.id] && !this.localOnlyTimer) {
           item.createSpan({ text: ` \u23F3 ${fmtTracked(this.timeByTask[task.id])}`, cls: "singularity-view-task-time" });
+        }
+        if (this.onTimerToggle && this.activeTimerTaskId === task.id && this.activeTimerStartIso) {
+          const badge = item.createSpan({ cls: "singularity-view-timer-live" });
+          badge.setText(this.liveTimerText());
+          this.activeTimerBadge = badge;
         }
         if (this.kanbanByTask[task.id]) {
           item.createSpan({ text: ` \u25A6 ${this.kanbanByTask[task.id]}`, cls: "singularity-view-task-kanban" });
@@ -4586,17 +4735,13 @@ var CreateTaskModal = class extends import_obsidian10.Modal {
 
 // src/main.ts
 function formatElapsed(totalSeconds) {
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor(totalSeconds % 3600 / 60);
-  const s = totalSeconds % 60;
-  if (h > 0) return `${h}\u0447 ${m}\u043C`;
-  if (m > 0) return `${m}\u043C ${s}\u0441`;
-  return `${s}\u0441`;
+  return formatElapsedDetail(totalSeconds);
 }
 var SingularitySyncPlugin = class extends import_obsidian11.Plugin {
   constructor() {
     super(...arguments);
     this.activeTimer = null;
+    this.timerLog = [];
     this._syncing = false;
     this._ssWorking = true;
     this._habitsChangedCbs = /* @__PURE__ */ new Set();
@@ -4677,9 +4822,17 @@ var SingularitySyncPlugin = class extends import_obsidian11.Plugin {
     });
     view.habitDaysCount = this.settings.habitDaysCount;
     view.activeTimerTaskId = this.activeTimer?.taskId ?? null;
+    view.activeTimerStartIso = this.activeTimer?.startIso ?? null;
+    view.localOnlyTimer = this.settings.localOnlyTimer ?? false;
     view.setTimerToggleCallback(async (sgTaskId, title) => {
       await this.toggleTimer(sgTaskId, title);
     });
+    view.setTimerLogCallbacks(
+      () => this.getTimerLog(),
+      async () => {
+        await this.clearTimerLog();
+      }
+    );
     view.setTaskCheckCallback(async (sgTaskId, checked, title) => {
       if (!title) return;
       const state = this.taskStore.getBySingularityId(sgTaskId);
@@ -4991,11 +5144,15 @@ var SingularitySyncPlugin = class extends import_obsidian11.Plugin {
       this.renderTimerStatus();
       this.syncTimerToViews();
     }
+    if (Array.isArray(data.timerLog)) {
+      this.timerLog = data.timerLog.filter((e) => e?.taskId && e?.start && e?.end).slice(0, TIMER_LOG_CAP);
+    }
   }
   async persistTimer() {
     const data = await this.loadData() ?? {};
     if (this.activeTimer) data.activeTimer = { ...this.activeTimer };
     else delete data.activeTimer;
+    data.timerLog = [...this.timerLog];
     delete data.singularityApiKey;
     delete data.singularityMcpToken;
     delete data.singularityMcpBaseUrl;
@@ -5004,19 +5161,31 @@ var SingularitySyncPlugin = class extends import_obsidian11.Plugin {
   renderTimerStatus() {
     if (!this.statusBar) return;
     if (this.activeTimer) {
-      this.statusBar.setText(`Singularity: \u23F1 ${this.activeTimer.title}`);
+      this.statusBar.setText(`Singularity: \u23F1 ${formatClockIso(this.activeTimer.startIso)} ${this.activeTimer.title}`);
     } else {
       this.statusBar.setText("Singularity: \u2014");
     }
   }
+  /** Push timer + local-only flags to open sidebar views. */
   syncTimerToViews() {
     const leaves = this.app.workspace.getLeavesOfType(SINGULARITY_VIEW_TYPE);
     for (const leaf of leaves) {
       const view = leaf.view;
       if (view && "activeTimerTaskId" in view) {
         view.activeTimerTaskId = this.activeTimer?.taskId ?? null;
+        view.activeTimerStartIso = this.activeTimer?.startIso ?? null;
+        view.localOnlyTimer = this.settings.localOnlyTimer ?? false;
       }
     }
+  }
+  /** Local journal of stopped sessions (newest first) for manual entry. */
+  getTimerLog() {
+    return [...this.timerLog];
+  }
+  async clearTimerLog() {
+    this.timerLog = [];
+    await this.persistTimer();
+    await this.refreshSingularityView();
   }
   async toggleTimer(sgTaskId, title) {
     if (this.activeTimer?.taskId === sgTaskId) {
@@ -5024,10 +5193,6 @@ var SingularitySyncPlugin = class extends import_obsidian11.Plugin {
       return;
     }
     if (this.activeTimer) await this.stopTimer(true);
-    if (!this.hasApiKey()) {
-      new import_obsidian11.Notice("\u041D\u0435\u0442 API-\u043A\u043B\u044E\u0447\u0430 Singularity");
-      return;
-    }
     this.activeTimer = { taskId: sgTaskId, title: title || "(\u0431\u0435\u0437 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u044F)", startIso: (/* @__PURE__ */ new Date()).toISOString() };
     await this.persistTimer();
     this.renderTimerStatus();
@@ -5041,20 +5206,36 @@ var SingularitySyncPlugin = class extends import_obsidian11.Plugin {
       return;
     }
     const { taskId, title, startIso } = this.activeTimer;
-    const elapsed = Math.max(0, Math.floor((Date.now() - Date.parse(startIso)) / 1e3));
-    const client = this.getApiClient();
+    const endDate = /* @__PURE__ */ new Date();
+    const elapsed = Math.max(0, Math.floor((endDate.getTime() - Date.parse(startIso)) / 1e3));
+    const entry = {
+      taskId,
+      title,
+      date: todayLocalDate(endDate),
+      start: formatClockIso(startIso),
+      end: `${String(endDate.getHours()).padStart(2, "0")}:${String(endDate.getMinutes()).padStart(2, "0")}`,
+      minutes: Math.round(elapsed / 60)
+    };
     this.activeTimer = null;
+    this.timerLog = appendLog(this.timerLog, entry);
     await this.persistTimer();
     this.renderTimerStatus();
     this.syncTimerToViews();
-    if (client && elapsed > 0) {
-      try {
-        await client.createTimeStat(new Date(startIso).toISOString(), elapsed, taskId);
-      } catch {
-        new import_obsidian11.Notice("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0437\u0430\u043F\u0438\u0441\u044C \u0432\u0440\u0435\u043C\u0435\u043D\u0438", 4e3);
+    if (!this.settings.localOnlyTimer) {
+      const client = this.getApiClient();
+      if (client && elapsed > 0) {
+        try {
+          await client.createTimeStat(new Date(startIso).toISOString(), elapsed, taskId);
+        } catch (e) {
+          const code = e?.statusCode;
+          new import_obsidian11.Notice(
+            code === 403 ? "\u26A0\uFE0F \u041D\u0435\u0442 scope \u0432\u0440\u0435\u043C\u0435\u043D\u0438 \u0443 \u0442\u043E\u043A\u0435\u043D\u0430 \u2014 \u0437\u0430\u043F\u0438\u0441\u044C \u0442\u043E\u043B\u044C\u043A\u043E \u0432 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u0436\u0443\u0440\u043D\u0430\u043B. \u0412\u043A\u043B\u044E\u0447\u0438\u0442\u0435 local-only \u0432 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430\u0445." : "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0437\u0430\u043F\u0438\u0441\u044C \u0432\u0440\u0435\u043C\u0435\u043D\u0438 \u2014 \u0434\u0430\u043D\u043D\u044B\u0435 \u0432 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E\u043C \u0436\u0443\u0440\u043D\u0430\u043B\u0435",
+            6e3
+          );
+        }
       }
     }
-    if (!silent) new import_obsidian11.Notice(`\u23F9 ${title}: ${formatElapsed(elapsed)}`);
+    if (!silent) new import_obsidian11.Notice(`\u23F9 ${title}: ${entry.start} \u2192 ${entry.end} (${formatElapsed(elapsed)})`);
     await this.refreshSingularityView();
   }
   async resetAndSync() {
@@ -5101,6 +5282,8 @@ var SingularitySyncPlugin = class extends import_obsidian11.Plugin {
     if (data.projectFiles) clean.projectFiles = data.projectFiles;
     if (data.noteHashes) clean.noteHashes = data.noteHashes;
     if (data.habitState) clean.habitState = data.habitState;
+    if (data.activeTimer) clean.activeTimer = data.activeTimer;
+    if (data.timerLog) clean.timerLog = data.timerLog;
     await this.saveData(clean);
   }
 };
