@@ -181,6 +181,18 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: 4px;
 }
+.singularity-create-modal h2 {
+  margin-top: 0;
+}
+.singularity-create-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+.singularity-create-buttons button {
+  padding: 6px 18px;
+  cursor: pointer;
+}
 .singularity-view-timer-btn {
   margin-left: auto;
   padding: 0 6px;

@@ -154,6 +154,10 @@ When **Conflict resolution** is set to `manual`, conflicts are not resolved auto
 - Actions: **Obsidian** (keep the Obsidian version), **Singularity** (keep the Singularity version), **Skip** (decide on the next sync), and **Create new in Singularity** when the task match is ambiguous
 - Dates are displayed in your local timezone
 
+### Creating tasks from the editor
+
+Right-click in any note → `➕ Задача Singularity` opens a dialog with all task fields (title, status, priority, project, dates, duration, tags, notification). The line is built in canonical format. If the chosen project matches the file under the cursor, the task is inserted at the cursor; otherwise it is appended to the target project's tasks section (file/section are created if missing). Sync runs automatically after insertion.
+
 ---
 
 ## ⚙️ Settings
