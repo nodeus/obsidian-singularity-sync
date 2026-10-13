@@ -1023,6 +1023,7 @@ var SingularityAPIClient = class {
     if (task.notifies?.length) body.notifies = task.notifies;
     if (task.journalDate) body.journalDate = task.journalDate;
     if (task.deleteDate) body.deleteDate = task.deleteDate;
+    if (task.parent != null) body.parent = task.parent;
     return body;
   }
   /**
@@ -1083,6 +1084,7 @@ var SingularityAPIClient = class {
     if (task.journalDate != null) body.journalDate = task.journalDate;
     if (task.deleteDate != null) body.deleteDate = task.deleteDate;
     if (task.externalId !== void 0) body.externalId = task.externalId;
+    if (task.parent != null) body.parent = task.parent;
     if (Object.keys(body).length === 0) throw new SingularityAPIError(400, "No fields to update");
     return this.patch(`/task/${taskId}`, body);
   }
@@ -1835,7 +1837,7 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
             cb.disabled = false;
           }
         };
-        item.createSpan({ text: task.title || "(\u0431\u0435\u0437 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u044F)", cls: done ? "singularity-view-task-done" : "" });
+        item.createSpan({ text: (task.parent ? "\u21B3 " : "") + (task.title || "(\u0431\u0435\u0437 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u044F)"), cls: done ? "singularity-view-task-done" : "" });
         if (task.recurrence) {
           const rule = sgRecurrenceToRule(task.recurrence) ?? "";
           item.createSpan({ text: " \u{1F501}", cls: "singularity-view-task-recurrence", attr: { title: rule || "\u041F\u043E\u0432\u0442\u043E\u0440\u044F\u044E\u0449\u0430\u044F\u0441\u044F \u0437\u0430\u0434\u0430\u0447\u0430" } });
@@ -2250,14 +2252,21 @@ var ALL_EMOJI_DATE_RE = new RegExp(
   "gu"
 );
 var ALL_TAGS_RE = /#[a-zA-Zа-яА-ЯёЁ0-9_/-]+/g;
-function generateTaskId(filePath, _lineNumber, content) {
+function parseIndentDepth(line) {
+  const m = line.match(/^(\s*)-/);
+  if (!m || m[1].length === 0) return 0;
+  const tabs = (m[1].match(/\t/g) ?? []).length;
+  const spaces = m[1].length - tabs;
+  return Math.max(1, tabs + Math.floor(spaces / 2));
+}
+function generateTaskId(filePath, _lineNumber, content, depth = 0) {
   let desc = removeRecurrence(removeDuration(content)).replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ xX-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim();
-  const key = `${filePath}:${desc}`;
+  const key = depth > 0 ? `${filePath}:>${depth}:${desc}` : `${filePath}:${desc}`;
   return hash53(key);
 }
-function computeStableHash(_filePath, content) {
+function computeStableHash(_filePath, content, depth = 0) {
   let desc = removeRecurrence(removeDuration(content)).replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ xX-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim().toLowerCase();
-  return hash53(desc);
+  return hash53(depth > 0 ? `>${depth}:${desc}` : desc);
 }
 function legacySimpleHash(str) {
   let hash = 0;
@@ -2309,8 +2318,9 @@ function parseTaskLine(line, filePath, lineNumber, projectName) {
   description = description.replace(/#[a-zA-Zа-яА-ЯёЁ0-9_/-]+/g, "").trim();
   const statusChar = m.groups.status;
   const status = statusChar === "-" ? "cancelled" /* Cancelled */ : statusChar.toLowerCase() === "x" ? "done" /* Done */ : "todo" /* Todo */;
-  const taskId = generateTaskId(filePath, lineNumber, content);
-  const stableHash = computeStableHash(filePath, content);
+  const depth = parseIndentDepth(line);
+  const taskId = generateTaskId(filePath, lineNumber, content, depth);
+  const stableHash = computeStableHash(filePath, content, depth);
   const syncContent = [
     description,
     statusChar,
@@ -2334,6 +2344,8 @@ function parseTaskLine(line, filePath, lineNumber, projectName) {
     status,
     filePath,
     lineNumber,
+    depth,
+    parentId: null,
     tags: allTags,
     projectTag,
     dueDate: dates.due,
@@ -2404,6 +2416,13 @@ function mergeChecklist(existing, sgItems, dropMissing) {
 }
 
 // src/adapters/obsidian/vault-reader.ts
+function linkParent(ancestors, task) {
+  while (ancestors.length > 0 && ancestors[ancestors.length - 1].depth >= task.depth) {
+    ancestors.pop();
+  }
+  task.parentId = ancestors.length > 0 ? ancestors[ancestors.length - 1].id : null;
+  ancestors.push(task);
+}
 function parseFrontmatterId(content) {
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
   if (!fmMatch) return null;
@@ -2422,9 +2441,13 @@ var ObsidianVaultReader = class {
     const content = await this.vault.read(file);
     const lines = content.split("\n");
     const tasks = [];
+    const ancestors = [];
     for (let i = 0; i < lines.length; i++) {
       const task = parseTaskLine(lines[i], tasksFile, i + 1);
-      if (task) tasks.push(task);
+      if (task) {
+        linkParent(ancestors, task);
+        tasks.push(task);
+      }
     }
     return tasks;
   }
@@ -2443,16 +2466,21 @@ var ObsidianVaultReader = class {
         const markerIdx = lines.findIndex((l) => l.trim() === marker);
         if (markerIdx === -1) continue;
         let inSection = false;
+        const ancestors = [];
         for (let i = 0; i < lines.length; i++) {
           if (lines[i].trim() === marker) {
             inSection = true;
+            ancestors.length = 0;
             continue;
           }
           if (inSection) {
             const trimmed = lines[i].trim();
             if (trimmed.startsWith("#") && trimmed !== marker) break;
             const task = parseTaskLine(lines[i], relativePath, i + 1, projectName);
-            if (task) tasks.push(task);
+            if (task) {
+              linkParent(ancestors, task);
+              tasks.push(task);
+            }
           }
         }
       }
@@ -2585,6 +2613,7 @@ function formatTaskLine(task) {
     emojis.push(`\u274C ${task.cancelledDate.split("T")[0]}`);
   }
   let line = `- [${statusChar}] #todo ${task.description}`;
+  if (task.depth > 0) line = "	".repeat(task.depth) + line;
   if (task.durationMinutes != null) {
     line += ` ${formatDuration(task.durationMinutes)}`;
   }
@@ -2594,6 +2623,34 @@ function formatTaskLine(task) {
   if (task.recurrenceRule) line += ` \u{1F501} ${task.recurrenceRule}`;
   if (notifyTags) line += ` ${notifyTags}`;
   return line;
+}
+function taskMatchKey(task) {
+  return `${task.depth}:${task.description.trim().toLowerCase().replace(/\s+/g, " ")}`;
+}
+function orderTasksForWrite(tasks) {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const placed = /* @__PURE__ */ new Set();
+  const out = [];
+  let remaining = [...tasks];
+  while (remaining.length > 0) {
+    const next = [];
+    let progress = false;
+    for (const t of remaining) {
+      if (!t.parentId || !byId.has(t.parentId) || placed.has(t.parentId)) {
+        out.push(t);
+        placed.add(t.id);
+        progress = true;
+      } else {
+        next.push(t);
+      }
+    }
+    if (!progress) {
+      out.push(...next);
+      break;
+    }
+    remaining = next;
+  }
+  return out;
 }
 var ObsidianVaultWriter = class {
   constructor(vault, tasksSectionMarker) {
@@ -2616,7 +2673,7 @@ var ObsidianVaultWriter = class {
     const marker = this.tasksSectionMarker;
     const markerIdx = lines.findIndex((l) => l.trim() === marker);
     if (markerIdx === -1) {
-      const taskLines = tasks.map((t) => formatTaskLine(t));
+      const taskLines = orderTasksForWrite(tasks).map((t) => formatTaskLine(t));
       const lastLine = lines[lines.length - 1];
       const needsBlank = lastLine !== "";
       lines.push(
@@ -2646,9 +2703,9 @@ ${taskLines.join("\n")}
     for (let i = 0; i < sectionLines.length; i++) {
       const trimmed = sectionLines[i].trim();
       if (!trimmed) continue;
-      const parsed = parseTaskLine(trimmed, filePath, markerIdx + 1 + i);
+      const parsed = parseTaskLine(sectionLines[i], filePath, markerIdx + 1 + i);
       if (parsed) {
-        const key = parsed.description.trim().toLowerCase().replace(/\s+/g, " ");
+        const key = taskMatchKey(parsed);
         if (!existingByDesc.has(key)) {
           existingByDesc.set(key, parsed);
         }
@@ -2656,11 +2713,11 @@ ${taskLines.join("\n")}
     }
     const sgByDesc = /* @__PURE__ */ new Map();
     for (const task of tasks) {
-      const key = task.description.trim().toLowerCase().replace(/\s+/g, " ");
-      sgByDesc.set(key, task);
+      sgByDesc.set(taskMatchKey(task), task);
     }
     const resultLines = [];
     const matchedDescs = /* @__PURE__ */ new Set();
+    const existingIdIndex = /* @__PURE__ */ new Map();
     let pendingBlank = false;
     for (let i = 0; i < sectionLines.length; i++) {
       const line = sectionLines[i];
@@ -2673,25 +2730,36 @@ ${taskLines.join("\n")}
         pendingBlank = false;
         if (resultLines.length > 0) resultLines.push("");
       }
-      const parsed = parseTaskLine(trimmed, filePath, markerIdx + 1 + i);
+      const parsed = parseTaskLine(line, filePath, markerIdx + 1 + i);
       if (!parsed) {
         resultLines.push(line);
         continue;
       }
-      const descKey = parsed.description.trim().toLowerCase().replace(/\s+/g, " ");
+      const descKey = taskMatchKey(parsed);
       const sgTask = sgByDesc.get(descKey);
       if (sgTask) {
         matchedDescs.add(descKey);
         resultLines.push(formatTaskLine(this.mergeTask(parsed, sgTask)));
+        existingIdIndex.set(parsed.id, resultLines.length - 1);
       } else {
         resultLines.push(line);
+        existingIdIndex.set(parsed.id, resultLines.length - 1);
       }
     }
-    for (const task of tasks) {
-      const key = task.description.trim().toLowerCase().replace(/\s+/g, " ");
-      if (!matchedDescs.has(key)) {
-        resultLines.push(formatTaskLine(task));
-      }
+    const attach = [];
+    for (const task of orderTasksForWrite(tasks)) {
+      const key = taskMatchKey(task);
+      if (matchedDescs.has(key)) continue;
+      const rendered = formatTaskLine(task);
+      const parentAt = task.parentId != null ? existingIdIndex.get(task.parentId) : void 0;
+      if (parentAt !== void 0) attach.push({ at: parentAt, line: rendered });
+      else resultLines.push(rendered);
+    }
+    attach.sort((a, b) => a.at - b.at);
+    let shift = 0;
+    for (const a of attach) {
+      resultLines.splice(a.at + 1 + shift, 0, a.line);
+      shift++;
     }
     const before = lines.slice(0, markerIdx + 1);
     const after = lines.slice(sectionEnd);
@@ -2724,6 +2792,9 @@ ${taskLines.join("\n")}
       reminderDate: sgTask.reminderDate ?? existing.reminderDate,
       durationMinutes: sgTask.durationMinutes ?? existing.durationMinutes,
       recurrenceRule: sgTask.recurrenceRule ?? existing.recurrenceRule,
+      // File structure wins: depth/parent linkage comes from file position.
+      depth: existing.depth,
+      parentId: existing.parentId,
       priority: sgTask.priority,
       lastSyncedAt: sgTask.lastSyncedAt,
       syncHash: sgTask.syncHash,
@@ -3143,10 +3214,37 @@ var ForwardSyncOrchestrator = class {
     const failedCreates = await this.flushPendingCreates();
     stats.created = Math.max(0, stats.created - failedCreates);
     stats.errors += failedCreates;
+    stats.updated += await this.linkOrphanParents(obsidianTasks);
     if (notesSectionMarker) {
       await this.syncChecklists(projectsFolder, notesSectionMarker, stats);
     }
     return stats;
+  }
+  /**
+   * Patch parent links for children whose parent flushed after them (or was
+   * created earlier this run). Returns the number of patched links.
+   * Skipped in dryRun.
+   */
+  async linkOrphanParents(obsidianTasks) {
+    if (this.dryRun) return 0;
+    let linked = 0;
+    for (const task of obsidianTasks) {
+      if (!task.parentId) continue;
+      const childState = this.taskStore.getByObsidianId(task.id);
+      const parentSgId = this.resolveParentSgId(task);
+      const childSgId = childState?.singularityTaskId;
+      if (!childSgId || !parentSgId) continue;
+      const cached = this._sgTasksCache.find((s) => s.id === childSgId);
+      if (cached && cached.parent === parentSgId) continue;
+      try {
+        await this.apiClient.updateTask(childSgId, { parent: parentSgId });
+        if (cached) cached.parent = parentSgId;
+        linked++;
+      } catch (e) {
+        console.warn(`[${this.runTag}ForwardSync] parent link failed for "${task.description}":`, e?.message ?? e);
+      }
+    }
+    return linked;
   }
   normalizeForComparison(text) {
     if (!text) return "";
@@ -3213,6 +3311,9 @@ var ForwardSyncOrchestrator = class {
     }
   }
   async syncTask(task) {
+    if (task.parentId && this.pendingCreates.length > 0) {
+      await this.flushPendingCreates();
+    }
     if (task.status === "cancelled" /* Cancelled */) {
       for (const sgExisting of this._sgTasksCache) {
         if (sgExisting.externalId === task.id) {
@@ -3381,21 +3482,29 @@ var ForwardSyncOrchestrator = class {
     if (!task.projectTag) return null;
     return this.findOrCreateProject(task.projectTag);
   }
+  /** Resolve the SG parent id for a nested Obsidian task (null = top-level
+   * or parent not synced yet — healed on a later pass/run). */
+  resolveParentSgId(task) {
+    if (!task.parentId) return null;
+    return this.taskStore.getByObsidianId(task.parentId)?.singularityTaskId ?? null;
+  }
   async updateExisting(task, sgExisting, overrideChecked) {
     const sgTaskId = sgExisting.id;
     if (!sgTaskId) return "skipped";
     const state = this.taskStore.getByObsidianId(task.id);
+    const resolvedParent = this.resolveParentSgId(task);
+    const parentChanged = task.parentId != null && resolvedParent != null && sgExisting.parent !== resolvedParent;
     if (state?.lastModifiedObsidian) {
       const currentMtime = await this.getFileMtime(task.filePath);
-      if (currentMtime && state.lastModifiedObsidian === currentMtime) return "skipped";
-    } else if (state?.obsidianContentHash === task.syncHash) {
+      if (currentMtime && state.lastModifiedObsidian === currentMtime && !parentChanged) return "skipped";
+    } else if (state?.obsidianContentHash === task.syncHash && !parentChanged) {
       return "skipped";
     }
     if (state && sgExisting.modificatedDate) {
       const sgDt = parseSgDate(sgExisting.modificatedDate);
       const dbDt = parseSgDate(state.lastModifiedSingularity);
       const expectedChecked = task.status === "cancelled" /* Cancelled */ ? 2 : task.status === "done" /* Done */ ? 1 : 0;
-      if (sgDt && dbDt && sgDt > dbDt && state.obsidianContentHash === task.syncHash && sgExisting.checked === expectedChecked) {
+      if (sgDt && dbDt && sgDt > dbDt && state.obsidianContentHash === task.syncHash && sgExisting.checked === expectedChecked && !parentChanged) {
         if (sgExisting.externalId !== task.id) {
           await this.apiClient.updateTask(sgTaskId, { externalId: task.id });
           sgExisting.externalId = task.id;
@@ -3435,12 +3544,14 @@ var ForwardSyncOrchestrator = class {
       tags: tags.length ? tags : void 0,
       projectId,
       externalId: task.id,
-      timeLength: task.durationMinutes ?? void 0
+      timeLength: task.durationMinutes ?? void 0,
+      parent: resolvedParent ?? void 0
     });
     sgExisting.title = task.description;
     sgExisting.checked = checked;
     sgExisting.externalId = task.id;
     sgExisting.tags = tags;
+    if (resolvedParent != null) sgExisting.parent = resolvedParent;
     if (task.durationMinutes != null) sgExisting.timeLength = task.durationMinutes;
     if (updatedTask?.modificatedDate) sgExisting.modificatedDate = updatedTask.modificatedDate;
     const sgModDate = updatedTask?.modificatedDate ?? sgExisting.modificatedDate;
@@ -3497,7 +3608,8 @@ var ForwardSyncOrchestrator = class {
       notifies: notifies.length ? notifies : [],
       alarmNotify: false,
       notify: 1,
-      timeLength: task.durationMinutes
+      timeLength: task.durationMinutes,
+      parent: this.resolveParentSgId(task)
     };
   }
   async registerCreated(task, data) {
@@ -3936,6 +4048,50 @@ function deltaToMarkdown(ops) {
   return renderLines(rawLines).join("\n");
 }
 
+// src/domain/task-notes.ts
+var TASK_ANCHOR_RE = /^%%\s*task:([A-Za-z0-9-]+)\s*%%$/;
+var CHECKLIST_ANCHOR_RE = /%%\s*chk:[A-Za-z0-9-]+\s*%%/;
+function formatTaskNoteAnchor(taskSgId) {
+  return `%% task:${taskSgId} %%`;
+}
+function parseTaskNoteAnchor(line) {
+  const m = line.trim().match(TASK_ANCHOR_RE);
+  return m ? m[1] : null;
+}
+function splitTaskNoteBlocks(lines) {
+  const blocks = [];
+  const byId = /* @__PURE__ */ new Map();
+  const rest = [];
+  let current = null;
+  for (const line of lines) {
+    const anchor = parseTaskNoteAnchor(line);
+    if (anchor) {
+      current = byId.get(anchor) ?? null;
+      if (!current) {
+        current = { taskSgId: anchor, lines: [] };
+        byId.set(anchor, current);
+        blocks.push(current);
+      }
+      continue;
+    }
+    if (current && !CHECKLIST_ANCHOR_RE.test(line)) {
+      current.lines.push(line);
+    } else {
+      if (current && CHECKLIST_ANCHOR_RE.test(line)) {
+      } else {
+        current = null;
+      }
+      rest.push(line);
+    }
+  }
+  return { blocks, rest };
+}
+function normNoteLines(lines) {
+  const out = [...lines];
+  while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
+  return out;
+}
+
 // src/domain/utils/project-name.ts
 var ILLEGAL_RE = /[/\\:*?"<>|]/g;
 function sanitizeProjectName(title) {
@@ -4046,6 +4202,7 @@ var ReverseSyncOrchestrator = class {
     await this.ensureProjectFiles();
     await this.syncProjectNotes();
     await this.syncChecklists(sgTasks, deltaSince);
+    await this.syncTaskNotes(sgTasks, deltaSince);
     await this.loadTags();
     this.loadObsidianProjects();
     const tasksToWrite = [];
@@ -4060,11 +4217,58 @@ var ReverseSyncOrchestrator = class {
         console.error(`[${this.runTag}ReverseSync] task error:`, e?.message || e, `sgTask:`, sgTask.id);
       }
     }
+    await this.resolveHierarchy(tasksToWrite, sgTasks);
     if (!this.dryRun && tasksToWrite.length > 0) {
       await this.writeTasks(tasksToWrite);
     }
     stats.created = tasksToWrite.length;
     return stats;
+  }
+  /**
+   * Resolve SG parent ids to Obsidian linkage: depth 1 + parentId set to the
+   * parent's Obsidian id (its SG externalId when known, else the in-batch
+   * parent's id). Parents outside the batch resolve via externalId so the
+   * child still nests under the existing line on write.
+   */
+  async resolveHierarchy(tasksToWrite, sgTasks) {
+    if (tasksToWrite.length === 0) return;
+    const sgById = new Map(sgTasks.map((t) => [t.id, t]));
+    const builtBySgId = /* @__PURE__ */ new Map();
+    for (const t of tasksToWrite) {
+      for (const s of sgTasks) {
+        if (s.externalId === t.id || `sg_${s.id}` === t.id) {
+          builtBySgId.set(s.id, t);
+          break;
+        }
+      }
+    }
+    const extCache = /* @__PURE__ */ new Map();
+    const externalOf = async (sgId) => {
+      const inBatch = sgById.get(sgId);
+      if (inBatch?.externalId) return inBatch.externalId;
+      const built = builtBySgId.get(sgId);
+      if (built) return built.id;
+      if (extCache.has(sgId)) return extCache.get(sgId) ?? null;
+      let ext = null;
+      try {
+        const full = await this.apiClient.getTaskById(sgId);
+        if (full?.externalId) ext = full.externalId;
+      } catch {
+      }
+      extCache.set(sgId, ext);
+      return ext;
+    };
+    for (const [sgId, built] of builtBySgId) {
+      const parentSgId = sgById.get(sgId)?.parent;
+      if (!parentSgId) continue;
+      const parentObId = await externalOf(parentSgId);
+      if (parentObId) {
+        built.depth = 1;
+        built.parentId = parentObId;
+      } else {
+        built.depth = 1;
+      }
+    }
   }
   async loadProjects() {
     try {
@@ -4262,6 +4466,7 @@ ${noteText}
       } else {
         const sectionLines = lines.slice(markerIdx + 1, sectionEnd);
         const { items } = splitNotesSection(sectionLines);
+        const { blocks } = splitTaskNoteBlocks(sectionLines);
         const before = lines.slice(0, markerIdx + 1);
         const after = lines.slice(sectionEnd);
         const newContent = [
@@ -4271,6 +4476,8 @@ ${noteText}
           ...items.length ? [""] : [],
           ...noteText.split("\n"),
           "",
+          ...renderTaskNoteBlocks(blocks),
+          ...blocks.length ? [""] : [],
           ...after
         ].join("\n");
         if (newContent !== content) await this.vault.modify(file, newContent);
@@ -4396,6 +4603,151 @@ ${sgItems.map((s) => formatChecklistLine(s.title, s.done, s.id)).join("\n")}
     console.log(
       `[${this.runTag}ReverseSync] checklist: fetched ${items.length}, wrote ~${written}, skipped inbox ${skippedInbox}, failed ${mergeFailed}`
     );
+  }
+  /**
+   * Reverse task-note sync (SG → Obsidian only): each SG task's `note` goes
+   * into an anchored `%% task:T-ID %%` block in its project file's notes
+   * section (blocks last, after checklist lines and free text). Inbox tasks
+   * are skipped (no notes section). Cleared notes drop their block on full
+   * sync only; delta keeps orphans. Non-fatal like checklists.
+   */
+  async syncTaskNotes(sgTasks, deltaSince) {
+    if (this.dryRun) return;
+    const relPath = this.projectsFolder.replace(/^\/+/, "");
+    let examined = 0;
+    let written = 0;
+    let skippedInbox = 0;
+    let failed = 0;
+    const dropMissing = !deltaSince;
+    for (const sgTask of sgTasks) {
+      if (!sgTask.id || sgTask.isNote) continue;
+      const noteText = await this.resolveTaskNoteText(sgTask);
+      const proj = sgTask.projectId ? this._projectsFull[sgTask.projectId] : null;
+      const title = (proj?.title ?? "").trim();
+      if (!title) {
+        if (noteText) skippedInbox++;
+        continue;
+      }
+      examined++;
+      const filePath = `${relPath}/${sanitizeProjectName(title)}.md`;
+      const file = this.vault.getAbstractFileByPath(filePath);
+      if (!(file instanceof import_obsidian9.TFile)) {
+        failed++;
+        console.warn(`[${this.runTag}ReverseSync] task-note: project file missing, skipped: ${filePath}`);
+        continue;
+      }
+      try {
+        const content = await this.vault.read(file);
+        const lines = content.split("\n");
+        const { markerIdx, sectionEnd } = this.findNotesSection(lines);
+        if (markerIdx === -1) {
+          if (!noteText) continue;
+          const lastLine = lines[lines.length - 1];
+          lines.push(
+            lastLine !== "" ? `
+${this._notesSectionMarker}
+${formatTaskNoteAnchor(sgTask.id)}
+${noteText}
+` : `${this._notesSectionMarker}
+${formatTaskNoteAnchor(sgTask.id)}
+${noteText}
+`
+          );
+          await this.vault.modify(file, lines.join("\n"));
+          written++;
+          continue;
+        }
+        const sectionLines = lines.slice(markerIdx + 1, sectionEnd);
+        const { blocks } = splitTaskNoteBlocks(sectionLines);
+        const existing = blocks.find((b) => b.taskSgId === sgTask.id);
+        const wantLines = noteText ? normNoteLines(noteText.split("\n")) : [];
+        const haveLines = existing ? normNoteLines(existing.lines) : null;
+        if (haveLines !== null && haveLines.join("\n") === wantLines.join("\n")) continue;
+        if (haveLines === null && wantLines.length === 0) continue;
+        let rebuilt;
+        if (wantLines.length === 0) {
+          if (!dropMissing) continue;
+          rebuilt = this.renderNotesWithoutTask(sectionLines, sgTask.id);
+        } else if (existing) {
+          rebuilt = this.renderNotesWithTask(sectionLines, sgTask.id, wantLines);
+        } else {
+          rebuilt = [...sectionLines, ...sectionLines.length && sectionLines[sectionLines.length - 1].trim() !== "" ? [""] : [], formatTaskNoteAnchor(sgTask.id), ...wantLines];
+        }
+        const newContent = [...lines.slice(0, markerIdx + 1), "", ...rebuilt, "", ...lines.slice(sectionEnd)].join("\n");
+        if (newContent !== content) {
+          await this.vault.modify(file, newContent);
+          written++;
+        }
+      } catch (e) {
+        failed++;
+        console.warn(`[${this.runTag}ReverseSync] task-note merge failed for ${filePath}:`, e?.message ?? e);
+      }
+    }
+    if (examined > 0 || failed > 0 || skippedInbox > 0) {
+      if (skippedInbox > 0) {
+        console.warn(`[${this.runTag}ReverseSync] skipped ${skippedInbox} task note(s) of inbox tasks (no notes section)`);
+      }
+      console.log(
+        `[${this.runTag}ReverseSync] task-notes: examined ${examined}, wrote ${written}, skipped inbox ${skippedInbox}, failed ${failed}`
+      );
+    }
+  }
+  /** Resolve an SG task's note to markdown text (same 3-tier fallback as projects). */
+  async resolveTaskNoteText(sgTask) {
+    let noteRaw = sgTask.note ?? "";
+    if (noteRaw && isNoteId(noteRaw)) {
+      try {
+        const noteData = await this.apiClient.getNote(noteRaw);
+        if (noteData?.content) noteRaw = noteData.content;
+      } catch {
+      }
+    }
+    if (!noteRaw || isNoteId(noteRaw)) return "";
+    return extractNoteText(noteRaw);
+  }
+  /** Section lines with one task's block replaced by new content. */
+  renderNotesWithTask(sectionLines, sgId, wantLines) {
+    const out = [];
+    let i = 0;
+    let replaced = false;
+    while (i < sectionLines.length) {
+      if (parseTaskNoteAnchor(sectionLines[i]) === sgId) {
+        out.push(sectionLines[i]);
+        out.push(...wantLines);
+        replaced = true;
+        i++;
+        while (i < sectionLines.length && parseTaskNoteAnchor(sectionLines[i]) === null) {
+          if (/%%\s*chk:[A-Za-z0-9-]+\s*%%/.test(sectionLines[i])) out.push(sectionLines[i]);
+          i++;
+        }
+        continue;
+      }
+      out.push(sectionLines[i]);
+      i++;
+    }
+    if (!replaced) {
+      if (out.length > 0 && out[out.length - 1].trim() !== "") out.push("");
+      out.push(formatTaskNoteAnchor(sgId), ...wantLines);
+    }
+    return out;
+  }
+  /** Section lines with one task's block (anchor + body) removed. */
+  renderNotesWithoutTask(sectionLines, sgId) {
+    const out = [];
+    let i = 0;
+    while (i < sectionLines.length) {
+      if (parseTaskNoteAnchor(sectionLines[i]) === sgId) {
+        i++;
+        while (i < sectionLines.length && parseTaskNoteAnchor(sectionLines[i]) === null) {
+          if (/%%\s*chk:[A-Za-z0-9-]+\s*%%/.test(sectionLines[i])) out.push(sectionLines[i]);
+          i++;
+        }
+        continue;
+      }
+      out.push(sectionLines[i]);
+      i++;
+    }
+    return out;
   }
   async loadTags() {
     try {
@@ -4541,6 +4893,10 @@ ${sgItems.map((s) => formatChecklistLine(s.title, s.done, s.id)).join("\n")}
       status: checked === 2 ? "cancelled" /* Cancelled */ : checked === 1 ? "done" /* Done */ : "todo" /* Todo */,
       filePath: this.obsidianTasksFile,
       lineNumber: 0,
+      // Hierarchy is resolved afterwards (resolveHierarchy): raw SG parent
+      // ids become depth/parentId here.
+      depth: 0,
+      parentId: null,
       tags: obsidianTags,
       projectTag: projectName ?? null,
       dueDate: utcIsoToLocalDate(deadline),
@@ -4711,6 +5067,8 @@ function buildTaskFromForm(form, filePath, formatLine) {
     status: form.status,
     filePath,
     lineNumber: 0,
+    depth: 0,
+    parentId: null,
     tags,
     projectTag: form.projectName,
     dueDate: form.due.trim() || null,

@@ -1,6 +1,6 @@
 # Singularity Sync
 
-![Version](https://img.shields.io/badge/version-2.7.0-blue)
+![Version](https://img.shields.io/badge/version-2.8.0-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.5%2B-purple)
 
 > **🌐 [Русская версия](README.ru.md)**
@@ -110,6 +110,14 @@ Priority emoji (`🔺⏫🔼🔽⏬`) goes after date emoji, before notify tags.
 ### Recurrence (read-only)
 
 Recurring Singularity tasks sync to Obsidian with a Tasks `🔁` rule (`🔁 every day`, `🔁 every week on Saturday`, `🔁 every month on the 30th`, `… when done` for completion-based repeats). The API cannot create or update recurrences, so the rule is display-only: it never goes back to Singularity, and toggling such a task in Obsidian lets the Tasks plugin create the next copy locally (complete recurring tasks in Singularity if you want a single source of truth).
+
+### Subtasks
+
+Indented `- [ ]` lines sync as Singularity subtasks (`parent` linkage, one tab per level). Children are placed right after their parent on write; un-indenting a task does not clear its server-side parent yet.
+
+### Task notes (Singularity → Obsidian)
+
+Each task's Singularity note syncs into an anchored `%% task:T-ID %%` block in its project file's notes section (blocks go last, after checklist lines and free text). Edits in Obsidian are preserved but not sent back yet; a note cleared in Singularity drops its block on full sync.
 
 ### Notification tags
 `#notify` is an offset from `⏰` (reminder time), NOT from deadline.
