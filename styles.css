@@ -172,6 +172,11 @@
   color: var(--text-faint);
   font-size: 11px;
 }
+.singularity-view-task-recurrence {
+  color: var(--text-accent);
+  font-size: 11px;
+  cursor: default;
+}
 .singularity-view-kanban-select {
   margin-left: 6px;
   font-size: 11px;

@@ -1,6 +1,6 @@
 # Singularity Sync
 
-![Version](https://img.shields.io/badge/version-2.6.0-blue)
+![Version](https://img.shields.io/badge/version-2.7.0-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.5%2B-purple)
 
 > **🌐 [Русская версия](README.ru.md)**
@@ -64,7 +64,7 @@ Only tasks with the `#todo` tag are synced. The expected format:
 - [ ] #todo Task title #tags ➕ YYYY-MM-DD ⏰ YYYY-MM-DD HH:mm 🛫 YYYY-MM-DD ⏳ YYYY-MM-DD 📅 YYYY-MM-DD 🔼 #notify/30 #notify
 ```
 
-**Standard order**: `#todo` → description → regular tags → `➕` → `⏰` → `🛫` → `⏳` → `📅` → `⏱` → `✅` → `❌` → priority → `#notify` tags.
+**Standard order**: `#todo` → description → `⏱`? → regular tags → `➕` → `⏰` → `📅` → `🛫` → `⏳` → `✅` → `❌` → priority → `#notify` tags.
 
 Time is only allowed in `⏰` (reminder). All other date emojis (`🛫⏳📅`) use date-only format — this is required for Obsidian Tasks Plugin compatibility.
 
@@ -90,12 +90,13 @@ This is set automatically when the file is created. Do not remove or modify it m
 |----------|-------|---------|--------|
 | 1 | `➕` | Created date | `YYYY-MM-DD` |
 | 2 | `⏰` | Reminder | `YYYY-MM-DD HH:mm` |
-| 3 | `🛫` | Start date | `YYYY-MM-DD` |
-| 4 | `⏳` | Scheduled date | `YYYY-MM-DD` |
-| 5 | `📅` | Due date | `YYYY-MM-DD` |
-| 6 | `⏱` | Duration | `30m`, `2h`, `1d`, `1h30m` |
-| 7 | `✅` | Done date | auto |
-| 8 | `❌` | Cancelled date | auto |
+| 3 | `📅` | Due date | `YYYY-MM-DD` |
+| 4 | `🛫` | Start date | `YYYY-MM-DD` |
+| 5 | `⏳` | Scheduled date | `YYYY-MM-DD` |
+| 6 | `✅` | Done date | auto |
+| 7 | `❌` | Cancelled date | auto |
+
+`⏱` duration (`30m`, `2h`, `1d`, `1h30m`) goes right after the description, before tags. Order matters: Tasks parses the line backwards and stops at the first unknown token, and the Reminder plugin requires nothing between `⏰` and `📅`.
 
 Priority emoji (`🔺⏫🔼🔽⏬`) goes after date emoji, before notify tags. `⏰` is the only emoji that supports time — all others are date-only.
 
@@ -105,6 +106,10 @@ Priority emoji (`🔺⏫🔼🔽⏬`) goes after date emoji, before notify tags.
 | `🔺` `⏫` | **0** (high) |
 | `🔼` | **1** (medium) |
 | `🔽` `⏬` | **2** (low) |
+
+### Recurrence (read-only)
+
+Recurring Singularity tasks sync to Obsidian with a Tasks `🔁` rule (`🔁 every day`, `🔁 every week on Saturday`, `🔁 every month on the 30th`, `… when done` for completion-based repeats). The API cannot create or update recurrences, so the rule is display-only: it never goes back to Singularity, and toggling such a task in Obsidian lets the Tasks plugin create the next copy locally (complete recurring tasks in Singularity if you want a single source of truth).
 
 ### Notification tags
 `#notify` is an offset from `⏰` (reminder time), NOT from deadline.

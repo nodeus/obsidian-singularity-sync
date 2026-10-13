@@ -523,6 +523,15 @@ function buildConflictView(ob, sg, dbState) {
     sgDur,
     !!sg && (ob.durationMinutes ?? null) !== (sg.timeLength ?? null)
   );
+  const obRec = ob.recurrenceRule ? `\u{1F501} ${ob.recurrenceRule}` : DASH;
+  const sgRec = sg ? sg.recurrenceRule ? `\u{1F501} ${sg.recurrenceRule}` : null : null;
+  push(
+    "recurrence",
+    "\u{1F501} \u041F\u043E\u0432\u0442\u043E\u0440\u0435\u043D\u0438\u0435",
+    obRec,
+    sgRec,
+    !!sg && normalize(ob.recurrenceRule ?? "") !== normalize(sg.recurrenceRule ?? "")
+  );
   const obModified = dbState?.lastModifiedObsidian ? formatLocal(dbState.lastModifiedObsidian) ?? DASH : DASH;
   const sgModified = sg?.modified ? formatLocal(sg.modified) ?? DASH : null;
   push("modified-ob", "\u0418\u0437\u043C\u0435\u043D\u0435\u043D\u043E \u0432 Obsidian", obModified, null, false);
@@ -531,6 +540,111 @@ function buildConflictView(ob, sg, dbState) {
   const startDiff = fields.some((f) => ["reminder", "start", "scheduled"].includes(f.key) && f.diff);
   if (startDiff) finalSummary.unshift("\u23F0\u{1F6EB}\u23F3 \u041D\u0430\u0447\u0430\u043B\u043E");
   return { fields, summary: finalSummary };
+}
+
+// src/domain/recurrence.ts
+var VS2 = String.fromCharCode(65039) + "?";
+var RECURRENCE_RE = new RegExp(
+  "\u{1F501}" + VS2 + "\\s*([A-Za-z0-9, !]+?)(?=\\s*(?:#|[\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C\u23F0\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC]|$))",
+  "u"
+);
+var RECURRENCE_STRIP_RE = new RegExp(
+  "\\s*\u{1F501}" + VS2 + "\\s*[A-Za-z0-9, !]+?(?=\\s*(?:#|[\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C\u23F0\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC]|$))",
+  "gu"
+);
+function parseRecurrenceRule(text) {
+  const m = text.match(RECURRENCE_RE);
+  if (!m) return null;
+  const rule = m[1].replace(/\s+/g, " ").trim();
+  return rule || null;
+}
+function removeRecurrence(text) {
+  return text.replace(RECURRENCE_STRIP_RE, "").replace(/\s+/g, " ").trim();
+}
+var WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+var MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December"
+];
+function ordinal(n) {
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1:
+      return `${n}st`;
+    case 2:
+      return `${n}nd`;
+    case 3:
+      return `${n}rd`;
+    default:
+      return `${n}th`;
+  }
+}
+function validDay(d) {
+  return typeof d === "number" && Number.isInteger(d) && d >= 0 && d <= 6;
+}
+function validMonthDay(d) {
+  return typeof d === "number" && Number.isInteger(d) && d >= 1 && d <= 31;
+}
+function validMonth(m) {
+  return typeof m === "number" && Number.isInteger(m) && m >= 0 && m <= 11;
+}
+function validInterval(i) {
+  return typeof i === "number" && Number.isInteger(i) && i >= 1;
+}
+function sgRecurrenceToRule(rec) {
+  if (!rec || typeof rec !== "object") return null;
+  const r = rec;
+  if (r.paused) return null;
+  const repeat = r.repeat;
+  if (!repeat || typeof repeat !== "object") return null;
+  let base = null;
+  if (repeat.everyday && typeof repeat.everyday === "object") {
+    const interval = repeat.everyday.interval ?? 1;
+    if (!validInterval(interval)) return null;
+    base = interval === 1 ? "every day" : `every ${interval} days`;
+  } else if (repeat.everyweek && typeof repeat.everyweek === "object") {
+    const w = repeat.everyweek;
+    if (!validInterval(w.interval ?? 1)) return null;
+    if (!Array.isArray(w.days) || w.days.length === 0 || !w.days.every(validDay)) return null;
+    const names = w.days.map((d) => WEEKDAYS[d]).join(", ");
+    base = w.interval === 1 ? `every week on ${names}` : `every ${w.interval} weeks on ${names}`;
+  } else if (repeat.everymonth && typeof repeat.everymonth === "object") {
+    const m = repeat.everymonth;
+    if ((m.interval ?? 1) !== 1) return null;
+    if (!Array.isArray(m.days) || m.days.length !== 1) return null;
+    const dayNumber = m.days[0]?.dayNumber;
+    if (!validMonthDay(dayNumber)) return null;
+    base = `every month on the ${ordinal(dayNumber)}`;
+  } else if (repeat.everyyear && typeof repeat.everyyear === "object") {
+    const y = repeat.everyyear;
+    const interval = y.interval ?? 1;
+    if (!validInterval(interval)) return null;
+    if (!Array.isArray(y.days) || y.days.length !== 1) return null;
+    const dayNumber = y.days[0]?.dayNumber;
+    if (!validMonthDay(dayNumber)) return null;
+    const monthNumber = y.days[0]?.monthNumber;
+    if (monthNumber === void 0 || monthNumber === null) {
+      base = interval === 1 ? "every year" : `every ${interval} years`;
+    } else {
+      if (!validMonth(monthNumber) || interval !== 1) return null;
+      base = `every ${MONTHS[monthNumber]} on the ${ordinal(dayNumber)}`;
+    }
+  } else {
+    return null;
+  }
+  if (r.onlyOnComplete) base += " when done";
+  return base;
 }
 
 // src/ui/conflict-modal.ts
@@ -591,7 +705,8 @@ var ConflictModal = class extends import_obsidian2.Modal {
         deleteDate: sg.deleteDate ?? null,
         notifies: Array.isArray(sg.notifies) ? sg.notifies : [],
         modified: sg.modificatedDate ?? null,
-        timeLength: typeof sg.timeLength === "number" ? sg.timeLength : null
+        timeLength: typeof sg.timeLength === "number" ? sg.timeLength : null,
+        recurrenceRule: sg.recurrence ? sgRecurrenceToRule(sg.recurrence) : null
       };
     }
     return new Promise((resolve) => {
@@ -1348,7 +1463,7 @@ function fmtLocal(d) {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
-var WEEKDAYS = ["\u0412\u0441", "\u041F\u043D", "\u0412\u0442", "\u0421\u0440", "\u0427\u0442", "\u041F\u0442", "\u0421\u0431"];
+var WEEKDAYS2 = ["\u0412\u0441", "\u041F\u043D", "\u0412\u0442", "\u0421\u0440", "\u0427\u0442", "\u041F\u0442", "\u0421\u0431"];
 function fmtTracked(totalSeconds) {
   const mins = Math.floor(totalSeconds / 60);
   const h = Math.floor(mins / 60);
@@ -1662,7 +1777,7 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
       this.render();
     };
     let filtered = this.selectedProject ? this.tasks.filter((t) => t.projectId === this.selectedProject) : this.tasks;
-    filtered = filtered.filter((t) => !t.recurrence && !t.isNote);
+    filtered = filtered.filter((t) => !t.isNote);
     if (excludedList.length > 0) {
       filtered = filtered.filter((t) => {
         const tagIds = t.tags ?? [];
@@ -1721,6 +1836,10 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
           }
         };
         item.createSpan({ text: task.title || "(\u0431\u0435\u0437 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u044F)", cls: done ? "singularity-view-task-done" : "" });
+        if (task.recurrence) {
+          const rule = sgRecurrenceToRule(task.recurrence) ?? "";
+          item.createSpan({ text: " \u{1F501}", cls: "singularity-view-task-recurrence", attr: { title: rule || "\u041F\u043E\u0432\u0442\u043E\u0440\u044F\u044E\u0449\u0430\u044F\u0441\u044F \u0437\u0430\u0434\u0430\u0447\u0430" } });
+        }
         if (task.group && this.groupNames[task.group]) {
           item.createSpan({ text: ` \u{1F4C2} ${this.groupNames[task.group]}`, cls: "singularity-view-task-group" });
         }
@@ -1806,7 +1925,7 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
       const d = new Date(today.getTime() - i * DAY_MS);
       days.push({
         date: fmtLocal(d),
-        dow: WEEKDAYS[d.getDay()],
+        dow: WEEKDAYS2[d.getDay()],
         isWeekend: d.getDay() === 0 || d.getDay() === 6
       });
     }
@@ -1869,7 +1988,7 @@ ${day.dow}`,
 // src/ui/habits-inline.ts
 var import_obsidian6 = require("obsidian");
 var DAY_MS2 = 864e5;
-var WEEKDAYS2 = ["\u0412\u0441", "\u041F\u043D", "\u0412\u0442", "\u0421\u0440", "\u0427\u0442", "\u041F\u0442", "\u0421\u0431"];
+var WEEKDAYS3 = ["\u0412\u0441", "\u041F\u043D", "\u0412\u0442", "\u0421\u0440", "\u0427\u0442", "\u041F\u0442", "\u0421\u0431"];
 var COLORS2 = {
   red: "#f44336",
   pink: "#e91e63",
@@ -1945,7 +2064,7 @@ function renderHabitsInline(container, apiClient, habits, habitsProgress, config
     const d = new Date(today.getTime() - i * DAY_MS2);
     days.push({
       date: fmtLocal2(d),
-      dow: WEEKDAYS2[d.getDay()],
+      dow: WEEKDAYS3[d.getDay()],
       isWeekend: d.getDay() === 0 || d.getDay() === 6
     });
   }
@@ -2075,15 +2194,15 @@ function registerHabitsPostProcessor(plugin) {
 var import_obsidian7 = require("obsidian");
 
 // src/domain/utils/date-parser.ts
-var VS2 = String.fromCharCode(65039) + "?";
+var VS3 = String.fromCharCode(65039) + "?";
 var EMOJI_DATE_PATTERNS = {
-  due: new RegExp("\u{1F4C5}" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?)", "u"),
-  scheduled: new RegExp("\u23F3" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?)", "u"),
-  start: new RegExp("\u{1F6EB}" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?)", "u"),
-  created: new RegExp("\u2795" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}(?::\\d{2})?)?)", "u"),
-  done: new RegExp("\u2705" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}(?::\\d{2})?)?)", "u"),
-  cancelled: new RegExp("\u274C" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}(?::\\d{2})?)?)", "u"),
-  reminder: new RegExp("\u23F0" + VS2 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?)", "u")
+  due: new RegExp("\u{1F4C5}" + VS3 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?)", "u"),
+  scheduled: new RegExp("\u23F3" + VS3 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?)", "u"),
+  start: new RegExp("\u{1F6EB}" + VS3 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?)", "u"),
+  created: new RegExp("\u2795" + VS3 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}(?::\\d{2})?)?)", "u"),
+  done: new RegExp("\u2705" + VS3 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}(?::\\d{2})?)?)", "u"),
+  cancelled: new RegExp("\u274C" + VS3 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}(?::\\d{2})?)?)", "u"),
+  reminder: new RegExp("\u23F0" + VS3 + "\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?)", "u")
 };
 function parseEmojiDates(text) {
   const result = {
@@ -2109,14 +2228,14 @@ function removeEmojiDates(text) {
   return result.replace(/\s+/g, " ").trim();
 }
 var EMOJI_DATE_RE = new RegExp(
-  "[\u{1F4C5}\u23F3\u{1F6EB}\u2795\u2705\u274C\u23F0]" + VS2 + "\\s*\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}(?::\\d{2})?)?",
+  "[\u{1F4C5}\u23F3\u{1F6EB}\u2795\u2705\u274C\u23F0]" + VS3 + "\\s*\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}(?::\\d{2})?)?",
   "gu"
 );
 
 // src/domain/parser.ts
-var VS3 = String.fromCharCode(65039) + "?";
+var VS4 = String.fromCharCode(65039) + "?";
 var TASK_LINE_RE = /^\s*-\s*\[(?<status>[ xX-])\]\s*(?<content>.+)$/;
-var PRIORITY_RE = new RegExp("([\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC])" + VS3, "u");
+var PRIORITY_RE = new RegExp("([\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC])" + VS4, "u");
 var PRIORITY_MAP = {
   "\u{1F53A}": "high" /* High */,
   "\u23EB": "high" /* High */,
@@ -2124,20 +2243,20 @@ var PRIORITY_MAP = {
   "\u{1F53D}": "low" /* Low */,
   "\u23EC": "lowest" /* Lowest */
 };
-var PRIORITY_STRIP_RE = new RegExp("[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC]" + VS3, "gu");
-var ALL_EMOJI_RE = new RegExp("[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C\u23F0]" + VS3, "gu");
+var PRIORITY_STRIP_RE = new RegExp("[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC]" + VS4, "gu");
+var ALL_EMOJI_RE = new RegExp("[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C\u23F0]" + VS4, "gu");
 var ALL_EMOJI_DATE_RE = new RegExp(
-  "[\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C\u23F0]" + VS3 + "\\s*\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?",
+  "[\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C\u23F0]" + VS4 + "\\s*\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2})?",
   "gu"
 );
 var ALL_TAGS_RE = /#[a-zA-Zа-яА-ЯёЁ0-9_/-]+/g;
 function generateTaskId(filePath, _lineNumber, content) {
-  let desc = removeDuration(content).replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ xX-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim();
+  let desc = removeRecurrence(removeDuration(content)).replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ xX-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim();
   const key = `${filePath}:${desc}`;
   return hash53(key);
 }
 function computeStableHash(_filePath, content) {
-  let desc = removeDuration(content).replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ xX-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  let desc = removeRecurrence(removeDuration(content)).replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ xX-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim().toLowerCase();
   return hash53(desc);
 }
 function legacySimpleHash(str) {
@@ -2162,7 +2281,7 @@ function hash53(str, seed = 0) {
   return (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
 }
 function computeLegacyStableHash(_filePath, content) {
-  const desc = removeDuration(content).replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ xX-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  const desc = removeRecurrence(removeDuration(content)).replace(ALL_EMOJI_DATE_RE, "").replace(ALL_EMOJI_RE, "").replace(ALL_TAGS_RE, "").replace(/-\s*\[\s*[ xX-]\s*\]\s*#todo\s*/g, "").replace(/\s+/g, " ").trim().toLowerCase();
   return legacySimpleHash(desc);
 }
 function parsePriority(text) {
@@ -2182,9 +2301,11 @@ function parseTaskLine(line, filePath, lineNumber, projectName) {
   const dates = parseEmojiDates(content);
   const priority = parsePriority(content);
   const durationMinutes = parseDurationMinutes(content);
+  const recurrenceRule = parseRecurrenceRule(content);
   let description = removeEmojiDates(content);
   description = description.replace(PRIORITY_STRIP_RE, "").trim();
   description = removeDuration(description);
+  description = removeRecurrence(description);
   description = description.replace(/#[a-zA-Zа-яА-ЯёЁ0-9_/-]+/g, "").trim();
   const statusChar = m.groups.status;
   const status = statusChar === "-" ? "cancelled" /* Cancelled */ : statusChar.toLowerCase() === "x" ? "done" /* Done */ : "todo" /* Todo */;
@@ -2202,6 +2323,7 @@ function parseTaskLine(line, filePath, lineNumber, projectName) {
     dates.cancelled ?? "",
     dates.reminder ?? "",
     durationMinutes?.toString() ?? "",
+    recurrenceRule ?? "",
     [...allTags].sort().join(","),
     projectTag ?? ""
   ].join("|");
@@ -2223,6 +2345,7 @@ function parseTaskLine(line, filePath, lineNumber, projectName) {
     reminderDate: dates.reminder,
     priority,
     durationMinutes,
+    recurrenceRule,
     lastSyncedAt: null,
     syncHash,
     stableHash
@@ -2446,17 +2569,14 @@ function formatTaskLine(task) {
   if (task.reminderDate) {
     emojis.push(`\u23F0 ${task.reminderDate}`);
   }
+  if (task.dueDate) {
+    emojis.push(`\u{1F4C5} ${formatDateForObsidian(task.dueDate).split(" ")[0]}`);
+  }
   if (task.startDate) {
     emojis.push(`\u{1F6EB} ${formatDateForObsidian(task.startDate).split(" ")[0]}`);
   }
   if (task.scheduledDate) {
     emojis.push(`\u23F3 ${formatDateForObsidian(task.scheduledDate).split(" ")[0]}`);
-  }
-  if (task.dueDate) {
-    emojis.push(`\u{1F4C5} ${formatDateForObsidian(task.dueDate).split(" ")[0]}`);
-  }
-  if (task.durationMinutes != null) {
-    emojis.push(formatDuration(task.durationMinutes));
   }
   if (task.doneDate) {
     emojis.push(`\u2705 ${task.doneDate.split("T")[0]}`);
@@ -2465,9 +2585,13 @@ function formatTaskLine(task) {
     emojis.push(`\u274C ${task.cancelledDate.split("T")[0]}`);
   }
   let line = `- [${statusChar}] #todo ${task.description}`;
+  if (task.durationMinutes != null) {
+    line += ` ${formatDuration(task.durationMinutes)}`;
+  }
   if (regularTags) line += ` ${regularTags}`;
   if (emojis.length) line += ` ${emojis.join(" ")}`;
   if (priorityEmoji) line += ` ${priorityEmoji}`;
+  if (task.recurrenceRule) line += ` \u{1F501} ${task.recurrenceRule}`;
   if (notifyTags) line += ` ${notifyTags}`;
   return line;
 }
@@ -2599,6 +2723,7 @@ ${taskLines.join("\n")}
       cancelledDate: existing.cancelledDate || sgTask.cancelledDate,
       reminderDate: sgTask.reminderDate ?? existing.reminderDate,
       durationMinutes: sgTask.durationMinutes ?? existing.durationMinutes,
+      recurrenceRule: sgTask.recurrenceRule ?? existing.recurrenceRule,
       priority: sgTask.priority,
       lastSyncedAt: sgTask.lastSyncedAt,
       syncHash: sgTask.syncHash,
@@ -3025,7 +3150,7 @@ var ForwardSyncOrchestrator = class {
   }
   normalizeForComparison(text) {
     if (!text) return "";
-    return text.trim().toLowerCase().replace(/\s+/g, " ").replace(/<[^>]+>/g, "").replace(/[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC]/gu, "").replace(/[\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C]\s*\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?/gu, "").replace(/#[a-zA-Zа-яА-ЯёЁ0-9_/-]+/g, "");
+    return removeRecurrence(text).trim().toLowerCase().replace(/\s+/g, " ").replace(/<[^>]+>/g, "").replace(/[\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC]/gu, "").replace(/[\u2795\u{1F6EB}\u23F3\u{1F4C5}\u2705\u274C]\s*\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?/gu, "").replace(/#[a-zA-Zа-яА-ЯёЁ0-9_/-]+/g, "");
   }
   /** Drop stale TaskStore records that point at the same SG task but whose
   * Obsidian id is gone (task moved between files and got a new id).
@@ -4317,7 +4442,6 @@ ${sgItems.map((s) => formatChecklistLine(s.title, s.done, s.id)).join("\n")}
     const title = sgTask.title ?? "";
     const tags = sgTask.tags ?? [];
     const sgId = sgTask.id;
-    if (sgTask.recurrence) return { ok: false, reason: "recurrence template" };
     if (sgTask.isNote) return { ok: false, reason: "isNote entity" };
     const excluded = this.excludeTags.map((t) => t.toLowerCase());
     for (const tagVal of tags) {
@@ -4404,6 +4528,13 @@ ${sgItems.map((s) => formatChecklistLine(s.title, s.done, s.id)).join("\n")}
         scheduledDate = null;
       }
     }
+    let recurrenceRule = null;
+    if (sgTask.recurrence) {
+      recurrenceRule = sgRecurrenceToRule(sgTask.recurrence);
+      if (!recurrenceRule) {
+        console.warn(`[${this.runTag}ReverseSync] unmappable recurrence, syncing plainly:`, sgId);
+      }
+    }
     const obsidianTask = {
       id: externalId ?? `sg_${sgId}`,
       description: title,
@@ -4421,6 +4552,7 @@ ${sgItems.map((s) => formatChecklistLine(s.title, s.done, s.id)).join("\n")}
       reminderDate,
       priority: priority != null ? mapPriorityFromSingularity(Number(priority)) : "high" /* High */,
       durationMinutes: typeof sgTask.timeLength === "number" ? sgTask.timeLength : null,
+      recurrenceRule,
       lastSyncedAt: null,
       syncHash: null,
       stableHash: computeStableHash(this.obsidianTasksFile, `- [ ] #todo ${title}`)
@@ -4590,6 +4722,9 @@ function buildTaskFromForm(form, filePath, formatLine) {
     reminderDate: form.reminder.trim() || null,
     priority: form.priority,
     durationMinutes,
+    // R1 is read-only: no modal field; a 🔁 typed into the title is picked
+    // up by the re-parse below.
+    recurrenceRule: null,
     lastSyncedAt: null,
     syncHash: null,
     stableHash: null
