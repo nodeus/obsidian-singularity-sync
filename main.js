@@ -372,7 +372,7 @@ function parseDurationMinutes(text) {
     total += parseInt(g[1], 10) * (UNIT_MINUTES[unit] ?? 0);
     found = true;
   }
-  return found ? total : null;
+  return found && total > 0 ? total : null;
 }
 function removeDuration(text) {
   return text.replace(DURATION_GLOBAL_RE, "").replace(/\s+/g, " ").trim();
@@ -515,13 +515,14 @@ function buildConflictView(ob, sg, dbState) {
   const sgNotifyStr = sg && sg.notifies.length ? sg.notifies.map((n) => `#notify/${n}`).join(", ") : null;
   push("notifies", "\u{1F514} \u0423\u0432\u0435\u0434\u043E\u043C\u043B\u0435\u043D\u0438\u044F", obNotifyStr, sgNotifyStr, !!sg && normalize(obNotifyStr) !== normalize(sgNotifyStr ?? ""));
   const obDur = ob.durationMinutes != null ? formatDuration(ob.durationMinutes) : DASH;
-  const sgDur = sg ? sg.timeLength != null ? formatDuration(sg.timeLength) : null : null;
+  const sgDur = sg ? sg.timeLength != null && sg.timeLength > 0 ? formatDuration(sg.timeLength) : null : null;
+  const sgDurVal = sg?.timeLength != null && sg.timeLength > 0 ? sg.timeLength : null;
   push(
     "duration",
     "\u23F1 \u0414\u043B\u0438\u0442\u0435\u043B\u044C\u043D\u043E\u0441\u0442\u044C",
     obDur,
     sgDur,
-    !!sg && (ob.durationMinutes ?? null) !== (sg.timeLength ?? null)
+    !!sg && (ob.durationMinutes ?? null) !== sgDurVal
   );
   const obRec = ob.recurrenceRule ? `\u{1F501} ${ob.recurrenceRule}` : DASH;
   const sgRec = sg ? sg.recurrenceRule ? `\u{1F501} ${sg.recurrenceRule}` : null : null;
@@ -705,7 +706,7 @@ var ConflictModal = class extends import_obsidian2.Modal {
         deleteDate: sg.deleteDate ?? null,
         notifies: Array.isArray(sg.notifies) ? sg.notifies : [],
         modified: sg.modificatedDate ?? null,
-        timeLength: typeof sg.timeLength === "number" ? sg.timeLength : null,
+        timeLength: typeof sg.timeLength === "number" && sg.timeLength > 0 ? sg.timeLength : null,
         recurrenceRule: sg.recurrence ? sgRecurrenceToRule(sg.recurrence) : null
       };
     }
@@ -868,6 +869,18 @@ function toSyncTimestamp(value) {
   if (isNaN(d.getTime())) return void 0;
   return d.toISOString();
 }
+var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function newUuid() {
+  try {
+    const c = globalThis?.crypto;
+    if (c?.randomUUID) return c.randomUUID();
+  } catch {
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => {
+    const r = Math.floor(Math.random() * 16);
+    return (ch === "x" ? r : r & 3 | 8).toString(16);
+  });
+}
 function isReadOnly(method) {
   return !method || method === "GET";
 }
@@ -998,6 +1011,9 @@ var SingularityAPIClient = class {
     }
   }
   async createTask(task) {
+    if (!task.title?.trim()) {
+      throw new SingularityAPIError(400, "Refusing to create a task with blank title (would 400 and poison batches)");
+    }
     return this.post("/task", this.toCreateBody(task));
   }
   /** Build the POST /task body (shared by single and batch creates). */
@@ -1018,7 +1034,7 @@ var SingularityAPIClient = class {
     }
     if (task.start) body.start = task.start;
     if (task.externalId) body.externalId = task.externalId;
-    if (task.timeLength != null) body.timeLength = task.timeLength;
+    if (task.timeLength != null && task.timeLength > 0) body.timeLength = task.timeLength;
     if (task.tags?.length) body.tags = task.tags;
     if (task.notifies?.length) body.notifies = task.notifies;
     if (task.journalDate) body.journalDate = task.journalDate;
@@ -1029,34 +1045,43 @@ var SingularityAPIClient = class {
   /**
    * Bulk-create tasks in one /batch call. Returns one entry per input (null
    * when that item failed even after the individual fallback), order kept.
+   * Bodies failing client-side validation are dropped upfront with a warn —
+   * one bad op must never 400 the whole envelope.
    */
   async createTasksBatch(tasks) {
     if (tasks.length === 0) return [];
-    if (tasks.length === 1) {
+    const validIdx = [];
+    const out = tasks.map(() => null);
+    tasks.forEach((t, i) => {
+      if (t.title?.trim()) validIdx.push(i);
+      else console.warn(`[Singularity API] dropping batch item with blank title (externalId=${t.externalId ?? "?"})`);
+    });
+    if (validIdx.length === 0) return out;
+    if (validIdx.length === 1) {
       try {
-        return [await this.createTask(tasks[0])];
+        out[validIdx[0]] = await this.createTask(tasks[validIdx[0]]);
       } catch (e) {
         console.error(`[Singularity API] create failed:`, e?.message ?? e);
-        return [null];
       }
+      return out;
     }
-    const out = tasks.map(() => null);
+    const uuids = validIdx.map(() => newUuid());
     try {
       const { results } = await this.executeBatch(
-        tasks.map((t, i) => ({ method: "POST", path: "/v2/task", body: this.toCreateBody(t), uuid: `c${i}` }))
+        validIdx.map((vi, i) => ({ method: "POST", path: "/v2/task", body: this.toCreateBody(tasks[vi]), uuid: uuids[i] }))
       );
       const byUuid = new Map(results.map((r) => [r.uuid, r]));
-      for (let i = 0; i < tasks.length; i++) {
-        const r = byUuid.get(`c${i}`);
-        if (r && r.status >= 200 && r.status < 300 && r.body?.id) out[i] = r.body;
-      }
+      validIdx.forEach((vi, i) => {
+        const r = byUuid.get(uuids[i]);
+        if (r && r.status >= 200 && r.status < 300 && r.body?.id) out[vi] = r.body;
+      });
     } catch (e) {
       console.warn(`[Singularity API] batch create failed, falling back to individual:`, e?.message ?? e);
     }
-    for (let i = 0; i < tasks.length; i++) {
-      if (!out[i]) {
+    for (const vi of validIdx) {
+      if (!out[vi]) {
         try {
-          out[i] = await this.createTask(tasks[i]);
+          out[vi] = await this.createTask(tasks[vi]);
         } catch (e) {
           console.error(`[Singularity API] fallback create failed:`, e?.message ?? e);
         }
@@ -1079,7 +1104,7 @@ var SingularityAPIClient = class {
       body.useTime = true;
     }
     if (task.start != null) body.start = task.start;
-    if (task.timeLength != null) body.timeLength = task.timeLength;
+    if (task.timeLength != null && task.timeLength > 0) body.timeLength = task.timeLength;
     if (task.notifies !== void 0) body.notifies = task.notifies;
     if (task.journalDate != null) body.journalDate = task.journalDate;
     if (task.deleteDate != null) body.deleteDate = task.deleteDate;
@@ -1301,10 +1326,13 @@ var SingularityAPIClient = class {
   }
   // ===== Batch =====
   /** Execute a batch of REST operations in one request. Per-operation status
-   * codes are in results — a 200 envelope does NOT mean every op succeeded. */
+   * codes are in results — a 200 envelope does NOT mean every op succeeded.
+   * Missing op uuids are filled with real UUIDs: the server validates the
+   * idempotency uuid format and 400s the whole envelope otherwise. */
   async executeBatch(operations) {
     if (operations.length === 0) return { results: [] };
-    const data = await this.post("/batch", { operations });
+    const withIds = operations.map((op) => ({ ...op, uuid: op.uuid && UUID_RE.test(op.uuid) ? op.uuid : newUuid() }));
+    const data = await this.post("/batch", { operations: withIds });
     return { results: data.results ?? [], tempIdMap: data.tempIdMap };
   }
   // ===== Kanban (read-only display for now; no drag-and-drop yet) =====
@@ -1337,8 +1365,13 @@ var SingularityAPIClient = class {
     if (filter.dateTo) params.dateTo = filter.dateTo;
     return this._paginate("/time-stat", params, "timeStats", batchSize, filter, quiet);
   }
-  async createTimeStat(start, secondsPassed, relatedTaskId) {
-    const body = { start, secondsPassed };
+  /**
+   * Record tracked time. `source` is REQUIRED by the API whenever
+   * `secondsPassed` is sent (0 = pomodoro ≤7200s, 1 = stopwatch ≤86400s) —
+   * omitting it 400s. Our timer is a stopwatch, hence the default.
+   */
+  async createTimeStat(start, secondsPassed, relatedTaskId, source = 1) {
+    const body = { start, secondsPassed, source };
     if (relatedTaskId) body.relatedTaskId = relatedTaskId;
     return this.post("/time-stat", body);
   }
@@ -1532,6 +1565,9 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
     this.activeTimerBadge = null;
     /** Session-level skip list for decoration sweeps the token may not access. */
     this.noScopeSweeps = /* @__PURE__ */ new Set();
+    /** Cooldown for core loads after a 401 (no hammering a rejected key). */
+    this.coreAuthBlockedUntil = 0;
+    this.onAuthFailure = null;
   }
   onunload() {
     this.stopTicker();
@@ -1575,24 +1611,35 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
     this.apiClient = client;
     await this.refresh();
   }
+  setAuthFailureCallback(cb) {
+    this.onAuthFailure = cb;
+  }
   /**
-   * Best-effort decoration sweep: quiet, never throws. First 403 disables
-   * the sweep for the session with one actionable Notice (token scope).
+   * Best-effort decoration sweep: quiet, never throws. First 403/401 disables
+   * the sweep for the session with one actionable Notice (token scope/key).
    */
   async sweep(key, label, fn, fallback) {
     if (this.noScopeSweeps.has(key)) return fallback;
     try {
       return await fn();
     } catch (e) {
-      if (e?.statusCode === 403) {
+      const code = e?.statusCode;
+      if (code === 403 || code === 401) {
         this.noScopeSweeps.add(key);
-        new import_obsidian5.Notice(`\u26A0\uFE0F \u041D\u0435\u0442 \u043F\u0440\u0430\u0432 \u0442\u043E\u043A\u0435\u043D\u0430: ${label}. \u0412\u043A\u043B\u044E\u0447\u0438\u0442\u0435 scope \u0432 \u043A\u0430\u0431\u0438\u043D\u0435\u0442\u0435 Singularity.`, 8e3);
+        new import_obsidian5.Notice(
+          code === 403 ? `\u26A0\uFE0F \u041D\u0435\u0442 \u043F\u0440\u0430\u0432 \u0442\u043E\u043A\u0435\u043D\u0430: ${label}. \u0412\u043A\u043B\u044E\u0447\u0438\u0442\u0435 scope \u0432 \u043A\u0430\u0431\u0438\u043D\u0435\u0442\u0435 Singularity.` : `\u26A0\uFE0F \u041D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u0430 (401): ${label}. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 API-\u043A\u043B\u044E\u0447, \u043F\u043E\u0432\u0442\u043E\u0440\u044B \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u044B \u0434\u043E \u043A\u043E\u043D\u0446\u0430 \u0441\u0435\u0441\u0441\u0438\u0438.`,
+          8e3
+        );
       }
       return fallback;
     }
   }
   async refresh() {
     if (!this.apiClient) return;
+    if (Date.now() < this.coreAuthBlockedUntil) {
+      this.renderAuthBlocked();
+      return;
+    }
     const client = this.apiClient;
     try {
       this.projects = await client.getProjects(false, false, 50);
@@ -1635,6 +1682,15 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
         if (tid && secs > 0) this.timeByTask[tid] = (this.timeByTask[tid] ?? 0) + secs;
       }
     } catch (e) {
+      if (e?.statusCode === 401) {
+        this.coreAuthBlockedUntil = Date.now() + 5 * 60 * 1e3;
+        try {
+          this.onAuthFailure?.();
+        } catch {
+        }
+        this.renderAuthBlocked();
+        return;
+      }
       this.contentEl.empty();
       this.contentEl.createEl("p", { text: `\u274C \u041E\u0448\u0438\u0431\u043A\u0430 \u0437\u0430\u0434\u0430\u0447: ${e.message}`, cls: "singularity-view-error" });
       return;
@@ -1646,6 +1702,14 @@ var SingularityTaskView = class extends import_obsidian5.ItemView {
     }
     await this.loadHabitProgress();
     this.render();
+  }
+  renderAuthBlocked() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("p", {
+      text: "\u{1F511} \u041D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u0430 (401). \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 API-\u043A\u043B\u044E\u0447 \u2014 \u043F\u043E\u0432\u0442\u043E\u0440 \u0447\u0435\u0440\u0435\u0437 5 \u043C\u0438\u043D\u0443\u0442.",
+      cls: "singularity-view-error"
+    });
   }
   render() {
     const { contentEl } = this;
@@ -2316,6 +2380,7 @@ function parseTaskLine(line, filePath, lineNumber, projectName) {
   description = removeDuration(description);
   description = removeRecurrence(description);
   description = description.replace(/#[a-zA-Zа-яА-ЯёЁ0-9_/-]+/g, "").trim();
+  if (!description) return null;
   const statusChar = m.groups.status;
   const status = statusChar === "-" ? "cancelled" /* Cancelled */ : statusChar.toLowerCase() === "x" ? "done" /* Done */ : "todo" /* Todo */;
   const depth = parseIndentDepth(line);
@@ -2614,7 +2679,7 @@ function formatTaskLine(task) {
   }
   let line = `- [${statusChar}] #todo ${task.description}`;
   if (task.depth > 0) line = "	".repeat(task.depth) + line;
-  if (task.durationMinutes != null) {
+  if (task.durationMinutes != null && task.durationMinutes > 0) {
     line += ` ${formatDuration(task.durationMinutes)}`;
   }
   if (regularTags) line += ` ${regularTags}`;
@@ -2666,6 +2731,12 @@ var ObsidianVaultWriter = class {
     });
     return await this.vault.create(relPath, "");
   }
+  /**
+   * Merge SG tasks into the file's task section. Matched lines are merged
+   * (SG fields win, Obsidian dates kept); unmatched ACTIVE tasks are appended.
+   * Unmatched Done/Cancelled tasks are merge-only: completed history must not
+   * materialize as new lines (2026-10-14). Returns append/skip counts.
+   */
   async writeTasksToFile(filePath, tasks) {
     const file = await this.ensureFile(filePath);
     const content = await this.vault.read(file);
@@ -2673,22 +2744,25 @@ var ObsidianVaultWriter = class {
     const marker = this.tasksSectionMarker;
     const markerIdx = lines.findIndex((l) => l.trim() === marker);
     if (markerIdx === -1) {
-      const taskLines = orderTasksForWrite(tasks).map((t) => formatTaskLine(t));
-      const lastLine = lines[lines.length - 1];
-      const needsBlank = lastLine !== "";
-      lines.push(
-        needsBlank ? `
+      const active = tasks.filter((t) => t.status === "todo" /* Todo */);
+      if (active.length > 0) {
+        const taskLines = orderTasksForWrite(active).map((t) => formatTaskLine(t));
+        const lastLine = lines[lines.length - 1];
+        const needsBlank = lastLine !== "";
+        lines.push(
+          needsBlank ? `
 ${marker}
 ${taskLines.join("\n")}
 ` : `${marker}
 ${taskLines.join("\n")}
 `
-      );
-      const newContent2 = lines.join("\n");
-      if (newContent2 !== content) {
-        await this.vault.modify(file, newContent2);
+        );
+        const newContent2 = lines.join("\n");
+        if (newContent2 !== content) {
+          await this.vault.modify(file, newContent2);
+        }
       }
-      return;
+      return { appended: active.length, skippedInactive: tasks.length - active.length };
     }
     let sectionEnd = lines.length;
     for (let i = markerIdx + 1; i < lines.length; i++) {
@@ -2747,9 +2821,16 @@ ${taskLines.join("\n")}
       }
     }
     const attach = [];
+    let appended = 0;
+    let skippedInactive = 0;
     for (const task of orderTasksForWrite(tasks)) {
       const key = taskMatchKey(task);
       if (matchedDescs.has(key)) continue;
+      if (task.status !== "todo" /* Todo */) {
+        skippedInactive++;
+        continue;
+      }
+      appended++;
       const rendered = formatTaskLine(task);
       const parentAt = task.parentId != null ? existingIdIndex.get(task.parentId) : void 0;
       if (parentAt !== void 0) attach.push({ at: parentAt, line: rendered });
@@ -2770,6 +2851,7 @@ ${taskLines.join("\n")}
     if (newContent !== content) {
       await this.vault.modify(file, newContent);
     }
+    return { appended, skippedInactive };
   }
   mergeTask(existing, sgTask) {
     return {
@@ -3473,6 +3555,10 @@ var ForwardSyncOrchestrator = class {
     for (const tag of task.tags) {
       const lower = tag.toLowerCase();
       if (lower === "todo" || lower.startsWith("notify")) continue;
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tag)) {
+        console.warn(`[${this.runTag}ForwardSync] skipping uuid-shaped tag "${tag}" (leak artifact, not a real tag)`);
+        continue;
+      }
       const id = await this.apiClient.getOrCreateTag(tag);
       if (id) tagIds.push(id);
     }
@@ -4219,9 +4305,12 @@ var ReverseSyncOrchestrator = class {
     }
     await this.resolveHierarchy(tasksToWrite, sgTasks);
     if (!this.dryRun && tasksToWrite.length > 0) {
-      await this.writeTasks(tasksToWrite);
+      const res = await this.writeTasks(tasksToWrite);
+      stats.created = res.appended;
+      stats.skipped += res.skippedInactive;
+    } else {
+      stats.created = this.dryRun ? tasksToWrite.length : 0;
     }
-    stats.created = tasksToWrite.length;
     return stats;
   }
   /**
@@ -4787,13 +4876,14 @@ ${noteText}
     const cleanId = tagId.replace(/^A-/, "");
     if (cleanId in this._tagsCache) return this._tagsCache[cleanId];
     if (tagId in this._tagsCache) return this._tagsCache[tagId];
-    return cleanId || tagId;
+    return null;
   }
   shouldSyncTask(sgTask) {
     const projectId = sgTask.projectId;
     const title = sgTask.title ?? "";
     const tags = sgTask.tags ?? [];
     const sgId = sgTask.id;
+    if (!title.trim()) return { ok: false, reason: "blank title" };
     if (sgTask.isNote) return { ok: false, reason: "isNote entity" };
     const excluded = this.excludeTags.map((t) => t.toLowerCase());
     for (const tagVal of tags) {
@@ -4907,7 +4997,9 @@ ${noteText}
       cancelledDate: checked === 2 ? utcIsoToLocalDate(sgTask.deleteDate) ?? utcIsoToLocalDate(sgTask.journalDate) ?? (/* @__PURE__ */ new Date()).toISOString().split("T")[0] : null,
       reminderDate,
       priority: priority != null ? mapPriorityFromSingularity(Number(priority)) : "high" /* High */,
-      durationMinutes: typeof sgTask.timeLength === "number" ? sgTask.timeLength : null,
+      // timeLength 0 is not a duration (server default) — map to null so no
+      // junk ⏱ 0m token is rendered.
+      durationMinutes: typeof sgTask.timeLength === "number" && sgTask.timeLength > 0 ? sgTask.timeLength : null,
       recurrenceRule,
       lastSyncedAt: null,
       syncHash: null,
@@ -4939,9 +5031,17 @@ ${noteText}
       if (!byFile.has(targetPath)) byFile.set(targetPath, []);
       byFile.get(targetPath).push(task);
     }
+    let appended = 0;
+    let skippedInactive = 0;
     for (const [filePath, fileTasks] of byFile) {
-      await this.vaultWriter.writeTasksToFile(filePath, fileTasks);
+      const res = await this.vaultWriter.writeTasksToFile(filePath, fileTasks);
+      appended += res.appended;
+      skippedInactive += res.skippedInactive;
     }
+    if (skippedInactive > 0) {
+      console.warn(`[${this.runTag}ReverseSync] merge-only: ${skippedInactive} done/cancelled task(s) had no Obsidian line, not created`);
+    }
+    return { appended, skippedInactive };
   }
 };
 
@@ -5097,6 +5197,17 @@ function todayLocal() {
   const p = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
+function splitReminderDateTime(reminder) {
+  const t = reminder.trim();
+  const m = t.match(/^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?$/);
+  if (!m) return { date: "", time: "" };
+  return { date: m[1], time: m[2] ?? "" };
+}
+function joinReminderDateTime(date, time) {
+  const d = date.trim();
+  if (!d) return "";
+  return time.trim() ? `${d} ${time.trim()}` : d;
+}
 
 // src/ui/create-task-modal.ts
 var PRIORITY_OPTIONS = [
@@ -5170,18 +5281,70 @@ var CreateTaskModal = class extends import_obsidian10.Modal {
         this.form.projectName = v || null;
       });
     });
-    const dateRow = (name, desc, placeholder, key) => {
-      new import_obsidian10.Setting(contentEl).setName(name).setDesc(desc).addText(
-        (t) => t.setPlaceholder(placeholder).setValue(this.form[key]).onChange((v) => {
+    const dateRow = (name, desc, key) => {
+      let input = null;
+      const s = new import_obsidian10.Setting(contentEl).setName(name).setDesc(desc).addText((t) => {
+        t.inputEl.type = "date";
+        t.setValue(this.form[key]).onChange((v) => {
           this.form[key] = v;
+        });
+        input = t;
+      }).addButton(
+        (b) => b.setButtonText("\u0421\u0435\u0433\u043E\u0434\u043D\u044F").onClick(() => {
+          this.form[key] = todayLocal();
+          input?.setValue(this.form[key]);
+        })
+      ).addButton(
+        (b) => b.setButtonText("\u2715").onClick(() => {
+          this.form[key] = "";
+          input?.setValue("");
         })
       );
+      void s;
     };
-    dateRow("\u2795 \u0421\u043E\u0437\u0434\u0430\u043D\u0430", "\u0414\u0430\u0442\u0430 \u0441\u043E\u0437\u0434\u0430\u043D\u0438\u044F", "YYYY-MM-DD", "created");
-    dateRow("\u23F0 \u041D\u0430\u043F\u043E\u043C\u0438\u043D\u0430\u043D\u0438\u0435", "\u0414\u0430\u0442\u0430 \u0438 \u0432\u0440\u0435\u043C\u044F", "YYYY-MM-DD HH:mm", "reminder");
-    dateRow("\u{1F6EB} \u0421\u0442\u0430\u0440\u0442", "\u0414\u0430\u0442\u0430 \u043D\u0430\u0447\u0430\u043B\u0430", "YYYY-MM-DD", "start");
-    dateRow("\u23F3 \u0417\u0430\u043F\u043B\u0430\u043D\u0438\u0440\u043E\u0432\u0430\u043D\u0430", "\u0414\u0430\u0442\u0430", "YYYY-MM-DD", "scheduled");
-    dateRow("\u{1F4C5} \u0421\u0440\u043E\u043A", "\u0414\u0435\u0434\u043B\u0430\u0439\u043D", "YYYY-MM-DD", "due");
+    dateRow("\u2795 \u0421\u043E\u0437\u0434\u0430\u043D\u0430", "\u0414\u0430\u0442\u0430 \u0441\u043E\u0437\u0434\u0430\u043D\u0438\u044F", "created");
+    dateRow("\u{1F6EB} \u0421\u0442\u0430\u0440\u0442", "\u0414\u0430\u0442\u0430 \u043D\u0430\u0447\u0430\u043B\u0430", "start");
+    dateRow("\u23F3 \u0417\u0430\u043F\u043B\u0430\u043D\u0438\u0440\u043E\u0432\u0430\u043D\u0430", "\u0414\u0430\u0442\u0430", "scheduled");
+    dateRow("\u{1F4C5} \u0421\u0440\u043E\u043A", "\u0414\u0435\u0434\u043B\u0430\u0439\u043D", "due");
+    {
+      const parts = splitReminderDateTime(this.form.reminder);
+      let date = parts.date;
+      let time = parts.time;
+      let dateInput = null;
+      let timeInput = null;
+      const commit = () => {
+        this.form.reminder = joinReminderDateTime(date, time);
+      };
+      new import_obsidian10.Setting(contentEl).setName("\u23F0 \u041D\u0430\u043F\u043E\u043C\u0438\u043D\u0430\u043D\u0438\u0435").setDesc("\u0414\u0430\u0442\u0430 \u0438 \u0432\u0440\u0435\u043C\u044F").addText((t) => {
+        t.inputEl.type = "date";
+        t.setValue(date).onChange((v) => {
+          date = v;
+          commit();
+        });
+        dateInput = t;
+      }).addText((t) => {
+        t.inputEl.type = "time";
+        t.setValue(time).onChange((v) => {
+          time = v;
+          commit();
+        });
+        timeInput = t;
+      }).addButton(
+        (b) => b.setButtonText("\u0421\u0435\u0433\u043E\u0434\u043D\u044F").onClick(() => {
+          date = todayLocal();
+          dateInput?.setValue(date);
+          commit();
+        })
+      ).addButton(
+        (b) => b.setButtonText("\u2715").onClick(() => {
+          date = "";
+          time = "";
+          dateInput?.setValue("");
+          timeInput?.setValue("");
+          commit();
+        })
+      );
+    }
     new import_obsidian10.Setting(contentEl).setName("\u23F1 \u0414\u043B\u0438\u0442\u0435\u043B\u044C\u043D\u043E\u0441\u0442\u044C").setDesc("\u041E\u0446\u0435\u043D\u043A\u0430 \u0432\u0440\u0435\u043C\u0435\u043D\u0438").addText(
       (t) => t.setPlaceholder("30m / 2h / 1d / 1h30m").onChange((v) => {
         this.form.duration = v;
@@ -5237,6 +5400,9 @@ var SingularitySyncPlugin = class extends import_obsidian11.Plugin {
     this.timerLog = [];
     this._syncing = false;
     this._ssWorking = true;
+    this._lastGoodApiKey = "";
+    /** Where the last getApiKey() value came from — diagnostics only. */
+    this._lastKeySource = "none";
     this._habitsChangedCbs = /* @__PURE__ */ new Set();
   }
   async onload() {
@@ -5326,6 +5492,7 @@ var SingularitySyncPlugin = class extends import_obsidian11.Plugin {
         await this.clearTimerLog();
       }
     );
+    view.setAuthFailureCallback(() => this.noteKeyFailure());
     view.setTaskCheckCallback(async (sgTaskId, checked, title) => {
       if (!title) return;
       const state = this.taskStore.getBySingularityId(sgTaskId);
@@ -5441,13 +5608,30 @@ var SingularitySyncPlugin = class extends import_obsidian11.Plugin {
         const ss = this.app?.secretStorage;
         if (ss?.getSecret) {
           const k = ss.getSecret("singularity");
-          if (k) return k;
+          if (k) {
+            this._lastGoodApiKey = k;
+            this._lastKeySource = "secretStorage";
+            return k;
+          }
         }
       } catch {
         this._ssWorking = false;
       }
     }
-    return this.settings.singularityApiKey || "";
+    const fromSettings = this.settings.singularityApiKey || "";
+    if (fromSettings) {
+      this._lastGoodApiKey = fromSettings;
+      this._lastKeySource = "settings";
+      return fromSettings;
+    }
+    if (this._lastGoodApiKey) this._lastKeySource = "cache";
+    return this._lastGoodApiKey;
+  }
+  /** Drop the cached key after a 401 so the next read goes fresh (a revoked
+   * key must not stick forever). Called from UI layers, never throws. */
+  noteKeyFailure() {
+    this._lastGoodApiKey = "";
+    new import_obsidian11.Notice(`\u26A0\uFE0F \u0421\u0435\u0440\u0432\u0435\u0440 \u043E\u0442\u043A\u043B\u043E\u043D\u0438\u043B \u043A\u043B\u044E\u0447 (\u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A: ${this._lastKeySource}). \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043A\u043B\u044E\u0447, \u043F\u043E\u0432\u0442\u043E\u0440 \u0447\u0435\u0440\u0435\u0437 5 \u043C\u0438\u043D\u0443\u0442.`, 8e3);
   }
   onHabitsChanged(cb) {
     this._habitsChangedCbs.add(cb);
@@ -5493,8 +5677,10 @@ var SingularitySyncPlugin = class extends import_obsidian11.Plugin {
     } catch {
     }
     this.settings.singularityApiKey = "";
+    this._lastGoodApiKey = "";
+    this._lastKeySource = "none";
     this.saveSettings();
-    new import_obsidian11.Notice("\u{1F5D1}\uFE0F \u041A\u043B\u044E\u0447 \u0443\u0434\u0430\u043B\u0451\u043D", 3e3);
+    new import_obsidian11.Notice("??? ???? ??????", 3e3);
   }
   async runSync() {
     if (this._syncing) {
